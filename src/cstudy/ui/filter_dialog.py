@@ -21,12 +21,13 @@ from PyQt6.QtWidgets import (
 
 from ..db import Database
 from ..logging_setup import get_logger
-from ..models import TYPE_LABELS
+from ..models import EXAM_TYPE_LABELS
 
 log = get_logger(__name__)
 
-# 题型固定按这个顺序显示，跟卷子上的顺序一致
-TYPE_ORDER = ("fill", "reading", "coding", "choice")
+# 按**考试的四类**排。程序填空单独一项——考试里它是独立的大题（36 分），
+# 跟普通填空（48 分）考的能力也不一样，混在一起就没法专练。
+EXAM_TYPE_ORDER = ("fill", "code_fill", "reading", "coding")
 
 # "数量"下拉框的选项：(显示文字, 抽几道；None = 全部)
 COUNT_CHOICES = (("全部", None), ("随机抽 10 道", 10), ("随机抽 20 道", 20), ("随机抽 50 道", 50))
@@ -59,14 +60,14 @@ class FilterDialog(QDialog):
         form = QFormLayout()
         layout.addLayout(form)
 
-        # ---- 题型 ----
+        # ---- 题型（按考试的四类）----
         self._type_boxes: dict[str, QCheckBox] = {}
-        present = {str(row["type"]) for row in db.query_questions()}
+        present = {str(row["exam_type"]) for row in db.query_questions()}
         type_row = QHBoxLayout()
-        for kind in TYPE_ORDER:
+        for kind in EXAM_TYPE_ORDER:
             if kind not in present:
                 continue
-            box = QCheckBox(TYPE_LABELS.get(kind, kind))
+            box = QCheckBox(EXAM_TYPE_LABELS.get(kind, kind))
             box.setChecked(True)
             self._type_boxes[kind] = box
             type_row.addWidget(box)
@@ -134,13 +135,13 @@ class FilterDialog(QDialog):
 
     def criteria(self) -> dict:
         """当前选中的条件，直接喂给 `Database.query_questions()`。"""
-        types = [kind for kind, box in self._type_boxes.items() if box.isChecked()]
+        exam_types = [kind for kind, box in self._type_boxes.items() if box.isChecked()]
         point_id = self.point_combo.currentData()
         source = self.source_combo.currentData()
         limit = self.count_combo.currentData()
 
         return {
-            "types": types,
+            "exam_types": exam_types,
             "point_ids": [point_id] if point_id else None,
             "sources": [source] if source else None,
             "limit": limit,

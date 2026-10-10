@@ -73,7 +73,7 @@ class TestFilterDialog:
     def test_default_criteria_means_everything(self, qapp, stocked: Database):
         criteria = FilterDialog(stocked).criteria()
 
-        assert criteria["types"] == ["fill", "coding"]
+        assert criteria["exam_types"] == ["fill", "coding"]
         assert criteria["point_ids"] is None
         assert criteria["sources"] is None
         assert criteria["limit"] is None

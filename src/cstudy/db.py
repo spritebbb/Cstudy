@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .logging_setup import get_logger
-from .models import Question
+from .models import Question, exam_type_for
 from .subtitle import Segment, render
 
 log = get_logger(__name__)
@@ -63,8 +63,12 @@ class Database:
     def init_schema(self) -> None:
         sql = SCHEMA_FILE.read_text(encoding="utf-8")
         with self.tx() as conn:
-            conn.executescript(sql)
+            # **先迁移再建表**：schema.sql 里有 `CREATE INDEX ... ON questions(exam_type)`，
+            # 老库的 questions 表还没有这一列，直接跑建表语句会报 "no such column"。
             self._migrate(conn)
+            conn.executescript(sql)
+        # 老库里的题没有考试题型，顺手补上——用户不该记得"升级后要跑一次迁移"
+        self.backfill_exam_types()
         log.info("数据库结构已就绪：%s", self.path)
 
     @staticmethod
@@ -74,10 +78,44 @@ class Database:
         `CREATE TABLE IF NOT EXISTS` 不会改动已存在的表，所以新加的列必须在这里补，
         否则老用户升级后一 INSERT 就报 "no such column"。
         """
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if "questions" not in tables:
+            return   # 全新的库，建表语句里已经带着这些列了
+
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(questions)")}
         if "point" not in columns:
             conn.execute("ALTER TABLE questions ADD COLUMN point TEXT")
             log.info("已给 questions 表补上 point 列")
+        if "exam_type" not in columns:
+            conn.execute("ALTER TABLE questions ADD COLUMN exam_type TEXT")
+            log.info("已给 questions 表补上 exam_type 列")
+
+    def backfill_exam_types(self) -> int:
+        """把还没有考试题型的题算出来补上。返回补了多少道。
+
+        只动 `exam_type IS NULL` 的行——所以这个可以放心地每次启动都跑，
+        跑过的不再动，也不会覆盖以后可能的（人工）修正。
+        """
+        rows = self.conn.execute(
+            "SELECT id, type, question FROM questions WHERE exam_type IS NULL"
+        ).fetchall()
+        if not rows:
+            return 0
+
+        # 只拿 type 和题干算，**不构造 Question**——构造会做完整校验
+        # （要求有答案、题型合法），一条坏数据就会炸掉整个回填。
+        updates = [
+            (exam_type_for(str(row["type"] or ""), str(row["question"] or "")), int(row["id"]))
+            for row in rows
+        ]
+
+        with self.tx() as conn:
+            conn.executemany("UPDATE questions SET exam_type = ? WHERE id = ?", updates)
+        log.info("已给 %d 道题补上考试题型", len(updates))
+        return len(updates)
 
     # ---------- 视频 ----------
 
@@ -176,10 +214,10 @@ class Database:
                 cur = conn.execute(
                     """
                     INSERT INTO questions
-                        (type, difficulty, point, point_id, note_id, question, options,
-                         answer, explanation, source)
-                    VALUES (:type, :difficulty, :point, :point_id, :note_id, :question,
-                            :options, :answer, :explanation, :source)
+                        (type, difficulty, point, point_id, exam_type, note_id, question,
+                         options, answer, explanation, source)
+                    VALUES (:type, :difficulty, :point, :point_id, :exam_type, :note_id,
+                            :question, :options, :answer, :explanation, :source)
                     """,
                     {**row, "note_id": note_id, "source": source},
                 )
@@ -198,6 +236,7 @@ class Database:
     def query_questions(
         self,
         types: list[str] | None = None,
+        exam_types: list[str] | None = None,
         point_ids: list[int] | None = None,
         sources: list[str] | None = None,
         limit: int | None = None,
@@ -207,12 +246,18 @@ class Database:
 
         条件都是可选的，一个都不传就是"全部题目"。值一律走参数占位符，
         不拼进 SQL 字符串里。
+
+        `types` 按库里的三类筛（fill/reading/coding）；
+        `exam_types` 按**考试的四类**筛（多一个 code_fill 程序填空）。
         """
         where: list[str] = []
         params: list[Any] = []
         if types:
             where.append(f"type IN ({','.join('?' * len(types))})")
             params.extend(types)
+        if exam_types:
+            where.append(f"exam_type IN ({','.join('?' * len(exam_types))})")
+            params.extend(exam_types)
         if point_ids:
             where.append(f"point_id IN ({','.join('?' * len(point_ids))})")
             params.extend(point_ids)

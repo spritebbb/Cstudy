@@ -167,3 +167,77 @@ class TestQuestionFromRow:
 
     def test_type_is_lowercased(self):
         assert Question.from_row(self._row(type="CHOICE")).type == "choice"
+
+
+class TestExamType:
+    """考试是**四类**题型，而库里的 type 只有三类——这里把差的那些分出来。
+
+    用户考的那所（湖北工程学院）公布的题型分值：填空 48 / 程序填空 36 /
+    程序阅读 35 / 程序设计 31，加起来正好 150。**程序填空是独立的一道大题**，
+    跟普通填空分开算分，考的能力也不一样，所以必须分得开。
+    """
+
+    def make(self, text: str, qtype: str = "fill") -> Question:
+        return Question(type=qtype, question=text, answer="1")
+
+    def test_multi_blank_code_is_a_code_fill(self):
+        """代码里挖了好几个空 —— 这是正儿八经的程序填空。"""
+        text = (
+            "#include <stdio.h>\nint main() {\n"
+            "    int a, b, max;\n"
+            "    ______(\"请输入两个数\");\n"
+            "    scanf(\"%d%d\", &a, &b);\n"
+            "    max = a;\n"
+            "    if (max < b) max = ______;\n"
+            '    printf("%d", ______);\n}'
+        )
+
+        assert self.make(text).exam_type == "code_fill"
+
+    def test_single_blank_code_with_a_fill_instruction_is_a_code_fill(self):
+        """只挖一个空，但题干说了"请填空"——那也是程序填空。"""
+        text = "以下程序调用 findmax 函数返回数组中的最大值，请填空。\nfindmax(int *a,int n) { int *p,*s; for(p=a,s=a; ______ ) ...}"
+
+        assert self.make(text).exam_type == "code_fill"
+
+    def test_plain_fill_with_code_as_background_stays_a_fill(self):
+        """带代码的普通填空：代码只是**背景**，空在问句里，考的还是知不知道。"""
+        text = "在C语言中，有如下语句： int a[3][2]={1,2,3,4,5,6}; 则 a[0][0] 的值为______。"
+
+        assert self.make(text).exam_type == "fill"
+
+    def test_plain_fill_without_any_code(self):
+        text = "表达式 21 % 4 的值为 ______。"
+
+        assert self.make(text).exam_type == "fill"
+
+    def test_read_the_program_and_write_the_output_is_reading(self):
+        """**这批题当初被标成了 fill**（因为题干里有个 `____`），实际是程序阅读题。
+
+        "以下程序运行后的输出结果是 ______" —— 空在**问句**里，
+        让你写运行结果，不是让你填代码。
+        """
+        text = (
+            "以下程序运行后的输出结果是 ______ 。\n"
+            "main()\n{ int x=2006,y=2007;\n  printf(\"%d\n\",(x,y));\n }"
+        )
+
+        assert self.make(text).exam_type == "reading"
+
+    def test_reading_typed_questions_stay_reading(self):
+        text = "阅读下面程序，写出运行后输出的结果。\n#include <stdio.h>\nint main() { return 0; }"
+
+        assert self.make(text, "reading").exam_type == "reading"
+
+    def test_coding_stays_coding(self):
+        assert self.make("编写一个完整的程序，输出 Hello World。", "coding").exam_type == "coding"
+
+    def test_labels_are_readable(self):
+        assert self.make("表达式 1+1 的值为 ______。").exam_type_label == "填空题"
+        assert self.make("int main() { int a=____, b=____; }").exam_type_label == "程序填空题"
+
+    def test_empty_parens_in_code_are_not_a_blank(self):
+        """`main()` 里的空括号到处都是，**不能当空算**——一认就全乱。"""
+        text = "以下程序运行后的输出结果是 ______ 。\nint main() { printf(\"hi\"); return 0; }"
+
+        assert self.make(text).exam_type == "reading"

@@ -62,7 +62,10 @@ CREATE TABLE IF NOT EXISTS questions (
     type        TEXT NOT NULL CHECK (type IN ('choice', 'fill', 'reading', 'coding')),
     difficulty  TEXT CHECK (difficulty IN ('easy', 'medium', 'hard')),
     point       TEXT,                            -- 知识点名称（AI 给的文字标签）
-    point_id    INTEGER,                         -- 对应考纲知识点（暂时没用上，恒为 NULL）
+    point_id    INTEGER,                         -- 对应考纲知识点（由 scripts/map_syllabus.py 对齐）
+    exam_type   TEXT,                            -- 考试题型：fill/code_fill/reading/coding
+                                                 -- 比 type 细一层——"程序填空"和"填空"在
+                                                 -- 考试里是两道大题，靠 type 分不开
     note_id     INTEGER,                         -- 来自哪份笔记
     question    TEXT NOT NULL,
     options     TEXT,                            -- 选择题选项，JSON 数组
@@ -100,5 +103,6 @@ CREATE INDEX IF NOT EXISTS idx_subtitles_video    ON subtitles(video_id);
 CREATE INDEX IF NOT EXISTS idx_notes_video        ON notes(video_id);
 CREATE INDEX IF NOT EXISTS idx_questions_note     ON questions(note_id);
 CREATE INDEX IF NOT EXISTS idx_questions_point    ON questions(point_id);
+CREATE INDEX IF NOT EXISTS idx_questions_exam_type ON questions(exam_type);
 CREATE INDEX IF NOT EXISTS idx_answers_question   ON answers(question_id);
 CREATE INDEX IF NOT EXISTS idx_wrong_next_review  ON wrong_questions(next_review_at);

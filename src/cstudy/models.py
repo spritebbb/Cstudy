@@ -7,6 +7,7 @@ AI 返回的是 JSON，属于"系统边界之外的输入"，必须校验后才�
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,9 +25,129 @@ TYPE_LABELS = {
     "coding": "编程大题",
 }
 
+# ============ 考试题型（比库里的 type 细一层）============
+#
+# 考试是**四类**：填空 / 程序填空 / 程序阅读 / 程序设计。
+# 而库里的 `type` 只有三类——**"填空"和"程序填空"都存成了 fill**。
+#
+# 这两个在考试里是两道不同的大题（48 分 vs 36 分），考的能力也不一样：
+# 填空考"知不知道"（算个表达式、记个规则），程序填空考"会不会在代码里用"
+# （看懂整段程序才能填对第一个空）。混在一起就没法专练。
+#
+# 所以这里按题干**现算**出考试题型，结果存在 `questions.exam_type` 里。
+EXAM_TYPE_CODE_FILL = "code_fill"
+
+EXAM_TYPE_LABELS = {
+    "fill": "填空题",
+    "code_fill": "程序填空题",
+    "reading": "程序阅读题",
+    "coding": "程序设计题",
+}
+
+# 题干里"要填的地方"的写法。
+#
+# **不认半角空括号 `()`**：代码里到处都是（`main()`、`printf()`），一认就全乱。
+# 只认下划线、【】、全角括号——这些几乎只出现在要填的地方。
+BLANK_MARK = re.compile(r"_{2,}|【\s*】|（\s*）|=\s*;|＝\s*;")
+
+# 代码结构。判据看这个，不看"有没有分号"——"语句 int a=5; 执行后……"这种
+# 普通填空题也有分号，不能算程序填空。
+CODE_START = re.compile(r"\{|#\s*include|main\s*\(")
+
+# **像一段程序**：有函数定义或 #include。
+# 比 CODE_START 严——光有个 `{` 可能只是数组初始化（`int a[3]={1,2,3};`），
+# 那不叫"一段程序"，拿它判程序阅读题会误判。
+PROGRAM_LIKE = re.compile(r"main\s*\(|#\s*include|\w+\s*\([^)]*\)\s*\{")
+
+# **问句里的空**："以下程序运行后的输出结果是 ______" —— 空在问句里，
+# 那是程序阅读题（让你写运行结果），不是程序填空（让你填代码）。
+ANSWER_BLANK = re.compile(r"(结果|输出|值|答案|运行|为)[^\n。；]{0,10}(_{2,}|【\s*】|（\s*）)")
+
+# 题干里明说"请填空"——普通填空题不会这么说，考的是知不知道
+FILL_HINT = re.compile(r"请填空|填空|填写|空缺|填入|补齐")
+
+
+def strip_answer_blanks(text: str) -> str:
+    """把问句里的"答题空"去掉，只留代码。
+
+    不先去掉它，程序阅读题会被当成程序填空——两者题干里都有代码、也都有空，
+    区别只在**空在代码里还是空在问句里**。
+    """
+    return ANSWER_BLANK.sub("", text)
+
+
+def _blanks_in_code(text: str) -> int:
+    """**代码段里面**有几个空。
+
+    先砍掉问句部分再看——"以下程序运行后的输出结果是 ______"里的空在问句里，
+    不算代码里的空。
+    """
+    cleaned = strip_answer_blanks(text)
+    start = CODE_START.search(cleaned)
+    if not start:
+        return 0
+    return len(BLANK_MARK.findall(cleaned[start.start() :]))
+
+
+def looks_like_code_fill(text: str) -> bool:
+    """题干是不是**程序填空题**——给一段代码、代码里挖了空让你填。
+
+    两条判据，满足一条就算：
+
+    1. **代码段里的空不少于 2 个**。真程序填空通常挖 2~5 个空
+       （`______(...)`、`max= ;`、`___);`）。
+    2. **代码里只有 1 个空，但题干明说了"请填空"**。有些程序填空就挖一个空，
+       这时候看它有没有那句说明——`填空题`考的是知不知道，不会说"请填空"。
+
+    为什么不用"代码里只要有空就算"：`int a[3][2]={1,2,3}; 则 a[0][0] 的值为___`
+    这种普通填空题也带代码、也有空，但那是**背景**，考的还是知不知道。
+
+    **宁可漏判也不要误判**：漏判只是少几道题进"程序填空"，
+    误判会让"只刷程序填空"里混进一堆别的题，那比不分类还糟。
+    """
+    if not CODE_START.search(text):
+        return False
+    blanks = _blanks_in_code(text)
+    if blanks >= 2:
+        return True
+    return blanks == 1 and bool(FILL_HINT.search(text))
+
+
+def looks_like_code_reading(text: str) -> bool:
+    """题干是不是**程序阅读题**——给一段程序、问运行结果。
+
+    这种题当初常被标成 `fill`（因为题干里有个 `____`），实际是另一道大题。
+
+    要求得**像一段程序**（有函数定义或 `#include`），不能光看有没有 `{`——
+    `int a[3]={1,2,3}; 则 a[0] 的值为___` 里的花括号只是数组初始化，
+    那道题考的还是知不知道，是普通填空。
+    """
+    if not PROGRAM_LIKE.search(text):
+        return False
+    if _blanks_in_code(text):
+        return False   # 代码里还有空 → 那是程序填空
+    return bool(ANSWER_BLANK.search(text))
+
 
 class DataError(ValueError):
     """数据不符合预期。消息会显示给用户，要说人话。"""
+
+
+def exam_type_for(qtype: str, question: str) -> str:
+    """**按考试口径**算出题型。`Question.exam_type` 和数据库回填都用这一个。
+
+    跟库里的 `type` 有两处不同，都是因为 `type` 分得不够细或标错了：
+
+    1. `fill` 里混着**程序填空题**——考试里那是独立的大题（36 分），要分出来
+    2. `fill` 里还混着一批**程序阅读题**（题干是"以下程序运行后的输出结果是___"），
+       当初因为题干里有个 `____` 被标成了填空。考试里这是另外一道大题（35 分）。
+    """
+    if qtype == "fill":
+        if looks_like_code_fill(question):
+            return EXAM_TYPE_CODE_FILL
+        if looks_like_code_reading(question):
+            return "reading"
+    return qtype
 
 
 @dataclass
@@ -59,6 +180,15 @@ class Question:
     def type_label(self) -> str:
         return TYPE_LABELS.get(self.type, self.type)
 
+    @property
+    def exam_type(self) -> str:
+        """按考试口径算出来的题型。见 `exam_type_for()`。"""
+        return exam_type_for(self.type, self.question)
+
+    @property
+    def exam_type_label(self) -> str:
+        return EXAM_TYPE_LABELS.get(self.exam_type, self.exam_type)
+
     def to_row(self) -> dict[str, Any]:
         """转成可以直接写进 questions 表的字典。"""
         return {
@@ -66,6 +196,9 @@ class Question:
             "difficulty": self.difficulty,
             "point": self.point,
             "point_id": self.point_id,
+            # 考试题型是**算出来的**，不是字段——见 exam_type 属性。
+            # 存进库是为了能按它做 SQL 筛选和统计。
+            "exam_type": self.exam_type,
             "question": self.question,
             "options": json.dumps(self.options, ensure_ascii=False) if self.options else None,
             "answer": self.answer,

@@ -352,3 +352,61 @@ class TestPointIdPersistence:
         db.save_questions([Question(type="fill", question="甲", answer="1")])
 
         assert Question.from_row(db.query_questions()[0]).point_id is None
+
+
+class TestExamType:
+    """考试题型（exam_type）：比 type 细一层，把"程序填空"从"填空"里分出来。"""
+
+    def test_saved_questions_get_an_exam_type(self, db: Database):
+        db.save_questions([Question(type="fill", question="表达式 1+1 的值为 ______。", answer="2")])
+
+        assert db.query_questions()[0]["exam_type"] == "fill"
+
+    def test_code_fill_is_told_apart(self, db: Database):
+        db.save_questions(
+            [
+                Question(
+                    type="fill",
+                    question="int main() {\n int a = ______;\n int b = ______;\n}",
+                    answer="1; 2",
+                )
+            ]
+        )
+
+        assert db.query_questions()[0]["exam_type"] == "code_fill"
+
+    def test_filters_by_exam_type(self, db: Database):
+        db.save_questions([Question(type="fill", question="表达式 1+1 的值为 ______。", answer="2")])
+        db.save_questions(
+            [
+                Question(
+                    type="fill",
+                    question="int main() {\n int a = ______;\n int b = ______;\n}",
+                    answer="1; 2",
+                )
+            ]
+        )
+
+        assert len(db.query_questions(exam_types=["fill"])) == 1
+        assert len(db.query_questions(exam_types=["code_fill"])) == 1
+        assert len(db.query_questions(exam_types=["fill", "code_fill"])) == 2
+
+    def test_backfill_fills_the_older_rows(self, db: Database):
+        """老库里的题没有 exam_type，启动时应该自动补上。"""
+        db.save_questions([Question(type="fill", question="表达式 1+1 的值为 ______。", answer="2")])
+        db.conn.execute("UPDATE questions SET exam_type = NULL")
+        db.conn.commit()
+
+        filled = db.backfill_exam_types()
+
+        assert filled == 1
+        assert db.query_questions()[0]["exam_type"] == "fill"
+
+    def test_backfill_leaves_corrected_rows_alone(self, db: Database):
+        """已经算过的不再动——否则以后人工修正过的会被冲掉。"""
+        db.save_questions([Question(type="fill", question="甲", answer="1")])
+        db.conn.execute("UPDATE questions SET exam_type = 'code_fill'")
+        db.conn.commit()
+
+        assert db.backfill_exam_types() == 0
+        assert db.query_questions()[0]["exam_type"] == "code_fill"

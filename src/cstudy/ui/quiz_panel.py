@@ -210,7 +210,7 @@ class QuizPanel(QWidget):
         question = item.question
         self.meta_label.setText(
             f"第 {self._index + 1}/{len(self._items)} 题　·　"
-            f"{question.type_label}　·　难度 {question.difficulty}"
+            f"{question.exam_type_label}　·　难度 {question.difficulty}"
             + (f"　·　知识点：{question.point}" if question.point else "")
         )
         self.question_view.setMarkdown(question.question)

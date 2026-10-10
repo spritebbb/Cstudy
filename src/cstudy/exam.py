@@ -3,12 +3,11 @@
 跟 `ai/quiz.py` 那条路**完全不同**：那条是从笔记**生成新题**（要调 AI）；
 这条只是从已有的题里**按比例挑**，不调 AI、不花钱。
 
-分值口径来自目标学校（湖北工程学院）公布的题型分值：
-填空 48 / 程序阅读 35 / 程序填空 36 / 程序设计 31（共 150 分）。
+分值口径来自目标学校（湖北工程学院）公布的题型分值，考试是**四类**：
+填空 48 / 程序填空 36 / 程序阅读 35 / 程序设计 31（共 150 分）。
 
-**注意题型口径**：考试是四类，而库里的 `type` 只有三类——
-`fill` 把"填空"和"程序填空"合并了（48+36=84），`reading` 是程序阅读，
-`coding` 是程序设计。所以比例是 84 : 35 : 31。
+**注意**：库里的 `type` 只有三类——"填空"和"程序填空"都是 `fill`。
+所以按**考试题型** `exam_type` 挑（多一个 `code_fill`），这样才能跟考试的结构对上。
 """
 
 from __future__ import annotations
@@ -18,12 +17,19 @@ from dataclasses import dataclass, field
 from .config import Config
 from .db import Database
 from .logging_setup import get_logger
-from .models import TYPE_LABELS, Question
+from .models import EXAM_TYPE_LABELS, Question
 
 log = get_logger(__name__)
 
 DEFAULT_TOTAL = 20
-DEFAULT_RATIOS = {"fill": 84, "reading": 35, "coding": 31}
+
+# 考试四类各自的分值。加得起来正好 150 —— 没有给选择题留分。
+DEFAULT_RATIOS = {
+    "fill": 48,
+    "code_fill": 36,
+    "reading": 35,
+    "coding": 31,
+}
 
 
 @dataclass
@@ -37,7 +43,9 @@ class ExamPlan:
         return sum(self.counts.values())
 
     def describe(self) -> str:
-        parts = [f"{TYPE_LABELS.get(k, k)} {v} 道" for k, v in self.counts.items() if v]
+        parts = [
+            f"{EXAM_TYPE_LABELS.get(k, k)} {v} 道" for k, v in self.counts.items() if v
+        ]
         return "、".join(parts) if parts else "（没算出题量）"
 
 
@@ -53,7 +61,7 @@ class ExamPaper:
         text = f"组了 {len(self.questions)} 道题（{self.plan.describe()}）"
         if self.shortfall:
             missing = "、".join(
-                f"{TYPE_LABELS.get(k, k)}差 {v} 道" for k, v in self.shortfall.items()
+                f"{EXAM_TYPE_LABELS.get(k, k)}差 {v} 道" for k, v in self.shortfall.items()
             )
             text += f"；题库里不够：{missing}"
         return text
@@ -126,7 +134,9 @@ def build_exam_paper(db: Database, config: Config) -> ExamPaper:
     shortfall: dict[str, int] = {}
 
     for kind, want in plan.counts.items():
-        rows = db.query_questions(types=[kind], shuffle=True, limit=want)
+        # 按**考试题型**挑（exam_type），不是库里的 type——不然"程序填空"会跟
+        # 普通填空混在一起，组出来的卷子跟考试的题型结构对不上
+        rows = db.query_questions(exam_types=[kind], shuffle=True, limit=want)
         if len(rows) < want:
             shortfall[kind] = want - len(rows)
         for row in rows:
