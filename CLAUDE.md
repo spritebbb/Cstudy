@@ -31,6 +31,7 @@
 | 扫码登录 B 站 | 双击 `扫码登录.bat` |
 | 跑测试 | `.venv\Scripts\python.exe -m pytest` |
 | 单独验证 AI 链路 | `.venv\Scripts\python.exe scripts\test_ai.py` |
+| 单独验证 B 站链路 | `.venv\Scripts\python.exe scripts\test_bilibili.py "BV号"` |
 
 ---
 
@@ -53,12 +54,29 @@
 
 ## 当前进度
 
-第一版已完成并验证：导入链接 → 抓字幕 → 生成笔记 → 出题 → 入库 + PyQt 界面。
+第一版已完成并**端到端验证**：导入链接 → 抓字幕 → 生成笔记 → 出题 → 入库 + PyQt 界面。
+
+**B 站字幕抓取已于 2026-10-10 实测通过**（BV1cp421X755，404 条 CC 字幕）。
+它此前一直是"唯一未验证的环节"，第一次真跑就暴露出四个连着的 bug（见下）。
 
 **还没做的**（第二、三版）：关键帧抽帧、AI 看图识别 PPT、错题本与遗忘曲线、
 考纲覆盖度统计、刷题界面、真题组卷、编程题 gcc 编译验证。
 
-**唯一未验证的环节**：B 站字幕抓取需要用户本人扫码登录，尚未实测过。
+### B 站接口的坑（改动前务必先看）
+
+1. **库的接口是 async 的**：`Video.get_info()` / `get_subtitle()` 都要 await。
+   同步调用会拿到协程对象，报 `'coroutine' object has no attribute 'get'`。
+   用 `bilibili/video.py` 里的 `_run_async()` 桥接。
+2. **curl_cffi 的异常不是 `requests` 的子类**（它挂在 `OSError` 下面）。
+   `_retry` 里必须单独捕一次，否则 TLS 抖动会绕过重试直接冒到界面。
+3. **登录 cookie 走 `Set-Cookie`，不在 URL 里了**：crossDomain 那个 URL 现在只剩
+   `ticket` / `gourl` / `first_domain`。bilibili-api 仍按老格式从 URL 抠 cookie，
+   抠出六个空字符串**而且不报错**——脚本照样打印"登录成功"，直到导入视频才发现。
+   所以要从 HTTP 会话的 cookie jar 读（见 `auth.py` 的 `credential()`）。
+4. **TLS 握手偶发被掐断**（实测约 1/5 概率，`SSL_ERROR_SYSCALL`）。
+   所有 B 站调用都必须带重试。
+5. **必须装 `curl_cffi`**：bilibili-api 把 HTTP 后端列为**可选依赖**，不装的话
+   调用任何接口都直接报"尚未安装第三方请求库或未注册自定义第三方请求库"。
 
 ---
 
