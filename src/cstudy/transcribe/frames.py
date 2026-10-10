@@ -144,6 +144,13 @@ def download_video(
     max_height = _setting(config, "max_height", DEFAULT_MAX_HEIGHT, int)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 上一次要是**中途挂了**（关软件、断电），下载的视频可能没来得及删，
+    # 一集十几 MB 就这么堆着。这里顺手清掉——跟清旧关键帧是一个道理。
+    for stale in out_dir.iterdir():
+        if stale.is_file() and stale.suffix.lower() in {".mp4", ".mkv", ".webm", ".flv", ".part"}:
+            log.info("清掉上次残留的视频文件：%s", stale.name)
+            stale.unlink()
+
     command = [
         yt_dlp,
         "--no-playlist",

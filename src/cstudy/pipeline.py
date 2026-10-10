@@ -260,8 +260,14 @@ class StudyPipeline:
         video_path = None
         try:
             video_path = download_video(video.url, frames_dir, self.config, progress)
+            # **按视频分目录存**：都塞进一个 keyframes/ 的话，下一集导入时
+            # 开跑前会清空，上一集的画面就找不回来了——而"留着能回看"正是
+            # 留帧的意义（笔记里的代码是 AI 读的，想核对得看原图）。
             frames = extract_keyframes(
-                video_path, frames_dir / "keyframes", self.config, progress
+                video_path,
+                frames_dir / "keyframes" / f"{video.bvid}_p{video.page}",
+                self.config,
+                progress,
             )
         except Exception as exc:
             log.warning("抽关键帧失败，这次只从字幕生成笔记：%s", exc)
