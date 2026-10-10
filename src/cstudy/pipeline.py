@@ -86,11 +86,17 @@ class ImportResult:
 
     @property
     def summary(self) -> str:
+        if self.questions:
+            question_line = f"题目：{len(self.questions)} 道"
+        else:
+            question_line = (
+                "题目：0 道（这一节没有可考的 C 语言内容，多半是开场或导学课，跳过即可）"
+            )
         return (
             f"《{self.video.title}》\n"
             f"字幕：{self.video.subtitle_label}，{len(self.video.segments)} 条\n"
             f"笔记：{self.note.path.name}\n"
-            f"题目：{len(self.questions)} 道"
+            f"{question_line}"
         )
 
 

@@ -108,6 +108,10 @@ def parse_questions(payload: str | list[dict]) -> list[Question]:
             problems.append(f"第 {index} 题被跳过：{exc}")
 
     if not questions:
+        if not payload:
+            # AI 明确回了空列表，表示"这节没有可考的 C 语言内容"（比如开场课）。
+            # 出 0 道题是正确结果，不是错误。
+            return []
         detail = "；".join(problems) if problems else "返回内容是空的"
         raise DataError(f"一道题都没解析出来。{detail}")
 

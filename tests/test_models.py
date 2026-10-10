@@ -98,9 +98,13 @@ class TestParseQuestions:
         with pytest.raises(DataError, match="一道题都没解析出来"):
             parse_questions({"questions": [{"type": "choice", "question": "缺答案"}]})
 
-    def test_empty_list_raises(self):
-        with pytest.raises(DataError):
-            parse_questions({"questions": []})
+    def test_empty_list_is_valid_not_an_error(self):
+        """AI 明确回空列表，表示"这节没有可考的 C 语言内容"（比如开场课）。
+
+        出 0 道题是正确结果——比硬凑出广告题好得多。只有"给了题目但全解析失败"
+        才算错误（见上一个用例）。
+        """
+        assert parse_questions({"questions": []}) == []
 
     def test_non_list_raises(self):
         with pytest.raises(DataError, match="应该是一个列表"):

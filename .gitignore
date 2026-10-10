@@ -16,6 +16,9 @@ data/audio/
 data/frames/
 logs/
 
+# ===== 生成的学习笔记（每次导入都会新增，是产物不是源码）=====
+notes/
+
 # ===== 临时文件 =====
 *.tmp
 *.part
