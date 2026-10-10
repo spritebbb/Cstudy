@@ -68,6 +68,13 @@ review:
 import:
   max_chars_per_call: 8000
 
+  # 导入时过滤掉这些题型。默认过滤选择题——湖北专升本这几所都不考，
+  # 但市面上的题库几乎都有选择题，不过滤会混进来一堆考不到的。
+  # 注意是"先让 AI 全部解析出来、再在代码里过滤"，
+  # 所以过滤掉几道会如实报给你核对，不会悄悄少题。
+  skip_types:
+    - choice
+
 transcribe:
   # 没有 CC 字幕时，是否用本地 whisper 转写
   enabled: true

@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..ai import QuestionImporter
+from ..ai import ImportOutcome, QuestionImporter
 from ..config import Config
 from ..db import Database
 from ..logging_setup import get_logger
@@ -42,7 +42,7 @@ class ImportWorker(QThread):
     """调 AI 解析题库文字。慢，必须放后台，否则窗口会假死。"""
 
     progress = pyqtSignal(str)
-    succeeded = pyqtSignal(object)   # list[Question]
+    succeeded = pyqtSignal(object)   # ImportOutcome
     failed = pyqtSignal(str)
 
     def __init__(self, client, config: Config, text: str) -> None:
@@ -53,14 +53,14 @@ class ImportWorker(QThread):
 
     def run(self) -> None:
         try:
-            questions = QuestionImporter(self._client, self._config).parse(
+            outcome = QuestionImporter(self._client, self._config).parse(
                 self._text, self.progress.emit
             )
         except Exception as exc:
             log.error("导入题库失败：%s", exc)
             self.failed.emit(friendly_error(exc))
         else:
-            self.succeeded.emit(questions)
+            self.succeeded.emit(outcome)
 
 
 class ImportDialog(QDialog):
@@ -137,12 +137,13 @@ class ImportDialog(QDialog):
         self._worker.finished.connect(lambda: self.parse_button.setEnabled(True))
         self._worker.start()
 
-    def _on_parsed(self, questions: list[Question]) -> None:
-        self._questions = list(questions)
+    def _on_parsed(self, outcome: ImportOutcome) -> None:
+        self._questions = list(outcome.questions)
         self.preview.setMarkdown(render_questions_markdown(self._questions))
         self.save_button.setEnabled(bool(self._questions))
+        # 把每个数字都写出来——用户要能核对有没有丢题
         self.status_label.setText(
-            f"解析出 {len(self._questions)} 道题。确认没问题就点「保存到题库」。"
+            f"{outcome.summary()}。确认没问题就点「保存到题库」。"
         )
 
     def _on_failed(self, message: str) -> None:
@@ -201,7 +202,7 @@ def render_questions_markdown(questions: list[Question]) -> str:
     if not questions:
         return "_没有解析出题目_"
 
-    parts: list[str] = [f"# 解析出 {len(questions)} 道题", ""]
+    parts: list[str] = [f"# 最终保留 {len(questions)} 道题", ""]
     for index, question in enumerate(questions, start=1):
         parts.append(f"## {index}. {question.type_label}（{question.difficulty}）")
         if question.point:
