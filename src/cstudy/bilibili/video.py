@@ -36,6 +36,10 @@ T = TypeVar("T")
 DEFAULT_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 3.0
 
+# CC 字幕覆盖不到视频这个比例时判定为不可用。B 站上不少视频的人工字幕
+# 只做了开场广告那一小段，拿它出题只会出一堆废题，宁可退回语音转写。
+MIN_COVERAGE_RATIO = 0.3
+
 
 class BilibiliError(RuntimeError):
     """B 站操作失败。消息会显示给用户，所以要说人话。"""
@@ -271,10 +275,79 @@ def _download_subtitle_body(url: str, config: Config | None) -> list[dict[str, A
     return list(body) if isinstance(body, list) else []
 
 
+def _subtitle_url(entry: dict[str, Any]) -> str:
+    url = str(entry.get("subtitle_url") or "")
+    if url.startswith("//"):
+        url = "https:" + url
+    return url
+
+
+def _parse_body(body: Any) -> list[Segment]:
+    """把字幕文件的 body 转成 Segment 列表。
+
+    逐条构造而不是列表推导：字幕文件格式偶尔会有脏数据，
+    宁可丢掉那一条，也不要让整个导入崩掉。
+    """
+    if not isinstance(body, list):
+        return []
+    segments: list[Segment] = []
+    for item in body:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("content") or "").strip()
+        if not text:
+            continue
+        try:
+            start = float(item.get("from") or 0.0)
+        except (TypeError, ValueError):
+            start = 0.0  # 时间戳坏了不值得丢掉整条字幕
+        segments.append(Segment(start=start, text=text))
+    return segments
+
+
+def _coverage(segments: list[Segment]) -> float:
+    """这条字幕覆盖到视频的第几秒。"""
+    return segments[-1].start if segments else 0.0
+
+
+def _pick_best_track(
+    entries: list[dict[str, Any]], config: Config | None
+) -> tuple[dict[str, Any], list[Segment]] | None:
+    """在候选字幕轨里挑覆盖最全的那条。
+
+    这一步很关键。B 站一个视频可能同时挂人工字幕和 AI 字幕，而**人工字幕有时
+    只覆盖开头一小段**（比如只做了开场广告），AI 字幕才是全的。只按语言挑第一条
+    会踩这个坑：拿到 45 秒的广告，把整节 15 分钟的课全丢了，最后 AI 只能拿广告出题。
+    """
+    # 优先中文轨，没有中文再退回全部。
+    # 注意用 in 而不是 startswith：B 站的 AI 字幕轨 lan 是 "ai-zh"，
+    # 以 "zh" 开头判断会把它漏掉——而那往往才是唯一覆盖全片的那条。
+    chinese = [e for e in entries if "zh" in str(e.get("lan") or "").lower()]
+    candidates = chinese or entries
+
+    best: tuple[dict[str, Any], list[Segment]] | None = None
+    for entry in candidates:
+        url = _subtitle_url(entry)
+        if not url:
+            continue
+        try:
+            segments = _parse_body(_download_subtitle_body(url, config))
+        except BilibiliError as exc:
+            # 单条轨下载失败不影响其他轨，记一笔继续
+            log.warning("字幕轨 %s 下载失败：%s", entry.get("lan"), exc)
+            continue
+        if not segments:
+            continue
+        if best is None or _coverage(segments) > _coverage(best[1]):
+            best = (entry, segments)
+
+    return best
+
+
 def fetch_subtitle(
     info: VideoInfo, credential=None, config: Config | None = None
 ) -> list[Segment] | None:
-    """下载 CC 字幕。没有字幕返回 None。"""
+    """下载 CC 字幕。没有可用字幕返回 None（由上层决定要不要转写）。"""
     if not info.cid:
         log.warning("没有 CID，无法查询字幕")
         return None
@@ -291,39 +364,30 @@ def fetch_subtitle(
         log.info("视频 %s 第 %d P 没有 CC 字幕", info.bvid, info.page)
         return None
 
-    # 优先中文
-    chosen = next(
-        (item for item in entries if str(item.get("lan") or "").startswith("zh")),
-        entries[0],
+    picked = _pick_best_track(entries, config)
+    if picked is None:
+        log.warning("字幕轨都在，但没有一条能解析出内容")
+        return None
+
+    chosen, segments = picked
+    log.info(
+        "选用字幕轨 %s（%s），%d 条，覆盖到 %s",
+        chosen.get("lan_doc") or chosen.get("lan"),
+        chosen.get("lan"),
+        len(segments),
+        segments[-1].timestamp,
     )
 
-    url = str(chosen.get("subtitle_url") or "")
-    if not url:
-        log.warning("字幕条目里没有地址")
-        return None
-    if url.startswith("//"):
-        url = "https:" + url
-
-    log.info("下载字幕：%s", chosen.get("lan_doc") or chosen.get("lan"))
-    body = _download_subtitle_body(url, config)
-
-    # 逐条构造而不是列表推导：字幕文件格式偶尔会有脏数据，
-    # 宁可丢掉那一条，也不要让整个导入崩掉。
-    segments: list[Segment] = []
-    for item in body:
-        if not isinstance(item, dict):
-            continue
-        text = str(item.get("content") or "").strip()
-        if not text:
-            continue
-        try:
-            start = float(item.get("from") or 0.0)
-        except (TypeError, ValueError):
-            start = 0.0  # 时间戳坏了不值得丢掉整条字幕
-        segments.append(Segment(start=start, text=text))
-    if not segments:
-        log.warning("字幕文件是空的")
+    # 覆盖太短说明这条字幕不是正片内容（B 站上不少视频的人工字幕只做了开场广告）。
+    # 拿它出题只会出一堆废题，不如退回语音转写。
+    coverage = _coverage(segments)
+    if info.duration and coverage < info.duration * MIN_COVERAGE_RATIO:
+        log.warning(
+            "CC 字幕只覆盖了 %.0f%% 的内容（%d / %d 秒），判定不可用，交给语音转写",
+            coverage / info.duration * 100,
+            int(coverage),
+            info.duration,
+        )
         return None
 
-    log.info("字幕 %d 条", len(segments))
     return segments

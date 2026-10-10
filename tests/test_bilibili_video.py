@@ -48,13 +48,15 @@ def make_config(transcribe_enabled: bool = True, **bilibili_overrides) -> Config
     return Config(raw, Path("."))
 
 
-def make_info(cid: int = 12345) -> VideoInfo:
+def make_info(cid: int = 12345, duration: int = 0) -> VideoInfo:
+    """duration 默认 0，表示"不知道时长"——这样字幕覆盖度的检查会被跳过，
+    让不关心它的测试保持简单。要测覆盖度就显式传时长。"""
     return VideoInfo(
         bvid="BV1xx411c7mD",
         page=1,
         title="示例视频",
         cid=cid,
-        duration=600,
+        duration=duration,
         url="https://www.bilibili.com/video/BV1xx411c7mD",
     )
 
@@ -227,6 +229,65 @@ class TestFetchSubtitle:
             Segment(0.0, "时间戳坏了"),
             Segment(0.0, "没有 from 字段"),
         ]
+
+    def test_prefers_the_track_that_covers_the_whole_video(self, monkeypatch):
+        """真实踩过的坑：人工字幕只做了开场广告，AI 字幕才是全的。
+
+        只挑"第一条中文轨"会拿到 45 秒的广告，把整节 15 分钟的课全丢掉，
+        最后 AI 只能拿广告出题。
+        """
+
+        class FakeVideo:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def get_subtitle(self, cid):
+                return {
+                    "subtitles": [
+                        {"lan": "zh", "subtitle_url": "https://e.com/manual.json"},
+                        {"lan": "ai-zh", "subtitle_url": "https://e.com/ai.json"},
+                    ]
+                }
+
+        bodies = {
+            # 人工轨：只有开场广告，覆盖到 45 秒
+            "https://e.com/manual.json": [
+                {"from": 0.0, "content": "点赞收藏三连"},
+                {"from": 45.0, "content": "评论区领取资料"},
+            ],
+            # AI 轨：覆盖整节课
+            "https://e.com/ai.json": [
+                {"from": 0.0, "content": "接下来我们学字符"},
+                {"from": 895.0, "content": "这节课就到这里"},
+            ],
+        }
+        monkeypatch.setattr("cstudy.bilibili.video.bili_video.Video", FakeVideo)
+        monkeypatch.setattr(
+            requests, "get", lambda url, *a, **k: FakeResponse(200, {"body": bodies[url]})
+        )
+
+        segments = fetch_subtitle(make_info(duration=897), config=make_config())
+        assert [s.text for s in segments] == ["接下来我们学字符", "这节课就到这里"]
+
+    def test_rejects_subtitle_that_barely_covers_the_video(self, monkeypatch):
+        """所有轨都只有开场广告时，宁可退回语音转写，也别拿广告出题。"""
+
+        class FakeVideo:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def get_subtitle(self, cid):
+                return {"subtitles": [{"lan": "zh", "subtitle_url": "https://e.com/short.json"}]}
+
+        monkeypatch.setattr("cstudy.bilibili.video.bili_video.Video", FakeVideo)
+        monkeypatch.setattr(
+            requests,
+            "get",
+            lambda *a, **k: FakeResponse(200, {"body": [{"from": 0.0, "content": "点赞三连"}]}),
+        )
+
+        # 覆盖 0 秒 / 共 897 秒，远低于阈值 -> 返回 None，交给上层转写
+        assert fetch_subtitle(make_info(duration=897), config=make_config()) is None
 
 
 class TestLibraryExceptionsAreTranslated:
