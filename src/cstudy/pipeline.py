@@ -19,6 +19,7 @@ from typing import Callable
 from .ai import DeepSeekClient, NoteGenerator, QuizGenerator, render_note_file
 from .ai.notes import safe_filename
 from .bilibili import (
+    BilibiliError,
     credential_path,
     fetch_subtitle,
     fetch_video_info,
@@ -111,8 +112,11 @@ class StudyPipeline:
         progress = on_progress or _noop
 
         bvid, page = parse_video_ref(link)
+        # 登录态在这里读一次，视频信息和字幕都用它：
+        # 有些视频不登录连标题都拿不到。
+        credential = load_credential(credential_path(self.config))
         progress("正在获取视频信息…")
-        info = fetch_video_info(bvid, page, config=self.config)
+        info = fetch_video_info(bvid, page, credential=credential, config=self.config)
         log.info("视频：%s 第 %d P（%s）", bvid, page, info.display_title)
 
         video_id = self.db.upsert_video(
@@ -122,7 +126,7 @@ class StudyPipeline:
             url=info.url,
             duration=info.duration,
         )
-        segments, source = self._resolve_subtitle(video_id, info, progress)
+        segments, source = self._resolve_subtitle(video_id, info, credential, progress)
 
         return LoadedVideo(
             video_id=video_id,
@@ -135,25 +139,54 @@ class StudyPipeline:
         )
 
     def _resolve_subtitle(
-        self, video_id: int, info: VideoInfo, on_progress: ProgressCallback
+        self,
+        video_id: int,
+        info: VideoInfo,
+        credential,
+        on_progress: ProgressCallback,
     ) -> tuple[list[Segment], str]:
-        """按 缓存 → B站CC → 本地转写 的顺序拿字幕。"""
+        """按 缓存 → B站CC → 本地转写 的顺序拿字幕。
+
+        中间任何一步失败都要继续往下退，不能因为字幕接口抽风就
+        让整个导入失败——用户要的是字幕，从哪来的无所谓。
+        """
         cached = self.db.get_subtitle_segments(video_id)
         if cached:
             on_progress(f"用已缓存的字幕（{len(cached)} 条）")
             return cached, "cache"
 
-        credential = load_credential(credential_path(self.config))
+        subtitle_error: str | None = None
+
         if credential:
             on_progress("正在从 B 站获取字幕…")
-            segments = fetch_subtitle(info, credential=credential, config=self.config)
+            try:
+                segments = fetch_subtitle(info, credential=credential, config=self.config)
+            except Exception as exc:
+                # 字幕这一步再出什么意外，都不该拖垮整个导入——退到语音转写就行。
+                # BilibiliError 的消息本来就是写给人看的，直接用；其他异常记全栈。
+                if isinstance(exc, BilibiliError):
+                    subtitle_error = str(exc)
+                    log.warning("获取 CC 字幕失败，改用语音转写：%s", exc)
+                else:
+                    subtitle_error = f"意外错误（{type(exc).__name__}）：{exc}"
+                    log.warning("获取 CC 字幕时出现意外错误，改用语音转写", exc_info=True)
+                on_progress("B 站字幕没拿到，改用本地语音转写…")
+                segments = None
             if segments:
                 self.db.save_subtitle(video_id, "bilibili_cc", segments)
                 return segments, "bilibili_cc"
         else:
+            subtitle_error = "还没有登录 B 站（双击 扫码登录.bat 扫码登录后就能拿到 CC 字幕）"
             on_progress("尚未登录 B 站，拿不到 CC 字幕，直接走语音转写")
 
         if not self.config.get("transcribe.enabled", True):
+            if subtitle_error:
+                raise PipelineError(
+                    "抓 B 站字幕失败了，而语音转写已在 config.yaml 里关闭，这次没法继续。\n"
+                    f"失败原因：{subtitle_error}\n"
+                    "可以稍后重新导入试试，或者把 transcribe.enabled 改成 true，"
+                    "让语音转写兜底。"
+                )
             raise PipelineError(
                 "这个视频没有可用的 CC 字幕，而语音转写已在 config.yaml 里关闭。\n"
                 "把 transcribe.enabled 改成 true 可以开启，或者换一个带字幕的视频。"
