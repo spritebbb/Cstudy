@@ -141,22 +141,29 @@ QUIZ_SYSTEM = """你是一个 C 语言助教，负责根据学习笔记出题。
 
 def quiz_user_prompt(notes: str, plan: "QuizPlan") -> str:
     """出题的 user 提示。题量按 plan 的策略描述（动态或固定）。"""
-    preference = "、".join(
-        f"{TYPE_LABELS[kind]} {n} 道"
-        for kind, n in plan.counts.items()
-        if n > 0 and kind in TYPE_LABELS
-    )
+    allowed = [kind for kind in TYPE_LABELS if plan.counts.get(kind, 0) > 0]
+    preference = "、".join(f"{TYPE_LABELS[kind]} {plan.counts[kind]} 道" for kind in allowed)
+
+    # 题型是**限定**不是"参考"：湖北专升本这几所都不考选择题，
+    # 只把 prefer.choice 设成 0 是不够的，AI 会顺手补几道选择题。
+    only_line = ""
+    if allowed:
+        only_line = (
+            f"**本次只出这些题型**：{'、'.join(TYPE_LABELS[k] for k in allowed)}。"
+            "不要出其他题型——考试不考。\n"
+        )
 
     if plan.mode == "auto":
         header = (
             "请根据以下笔记出题。\n"
+            f"{only_line}"
             f"**题量由你决定**：先看这节内容有多少，内容多就多出、内容少就少出，"
             f"总数控制在 {plan.min_total}~{plan.max_total} 道之间。\n"
             f"各题型大致比例参考：{preference}。\n"
             "宁可少出几道，也不要为了凑数出废题。"
         )
     else:
-        header = f"请根据以下笔记出题。期望数量：\n{preference}"
+        header = f"请根据以下笔记出题。\n{only_line}期望数量：\n{preference}"
 
     return (
         f"{header}\n\n"

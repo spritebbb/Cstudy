@@ -124,6 +124,20 @@ class TestQuizUserPrompt:
         assert "期望数量" in text
         assert "选择题 3 道" in text
 
+    def test_zero_prefer_forbids_that_type(self):
+        """湖北专升本这几所都不考选择题。
+
+        只把 prefer.choice 设成 0 当"比例参考"是不够的——AI 会顺手补几道
+        选择题。必须明确限定题型范围。
+        """
+        plan = build_quiz_plan(
+            make_config({"prefer": {"choice": 0, "fill": 3, "reading": 1, "coding": 1}})
+        )
+        text = prompts.quiz_user_prompt("笔记", plan)
+        assert "只出这些题型" in text
+        assert "填空题" in text and "程序阅读题" in text and "编程大题" in text
+        assert "选择题" not in text
+
 
 class TestPromptRules:
     """提示词就是这个项目的"代码"，关键规则掉了要能立刻发现。"""
