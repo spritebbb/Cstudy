@@ -58,3 +58,11 @@ tzlocal==5.4.4
 urllib3==2.8.0
 yarl==1.25.1
 yt-dlp==2026.8.19
+
+# ===== bilibili-api 的可选 HTTP 后端 =====
+# bilibili-api-python 把 curl_cffi / aiohttp / httpx 列为可选依赖，安装时不会自动带上。
+# 一个都不装的话，调用任何 B 站接口都会报"尚未安装第三方请求库或未注册自定义第三方请求库"。
+# 装 curl_cffi 是因为它优先级最高，而且能伪装浏览器 TLS 指纹，对付 B 站的反爬最有效。
+cffi==2.1.1
+curl_cffi==0.16.3
+pycparser==3.11
