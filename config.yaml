@@ -29,10 +29,33 @@ notes:
   min_chunk_chars: 200
 
 quiz:
-  choice: 3
-  fill: 2
-  reading: 1
-  coding: 1
+  # 出题数量：
+  #   auto = 让 AI 按这节课的内容多少自己定（推荐）
+  #   数字 = 固定出这么多道，比如 8
+  count: auto
+
+  # count 为 auto 时生效。内容少就少出，但不会少到没法练；
+  # 内容多就多出，但不会一下子冒出几十道。
+  min_count: 5
+  max_count: 12
+
+  # 各题型的偏好。只是给 AI 的参考比例，不是硬性数量——
+  # 哪节适合多出编程题，把 coding 调大一点即可。
+  prefer:
+    choice: 3
+    fill: 2
+    reading: 1
+    coding: 1
+
+# 生成完笔记和题目后，让 AI 再复查一遍：
+# 答案错的自动改，广告题和废题自动删，并告诉你删了哪几道、为什么。
+# 关掉能省一次 AI 调用，但内容就没人把关了。
+review:
+  enabled: true
+  # 复查题目时，送给 AI 的笔记最多多少字（超长笔记会截断，避免请求过大）
+  max_note_chars: 8000
+  # 复查笔记时，送给 AI 的原始字幕最多多少字
+  max_source_chars: 40000
 
 transcribe:
   # 没有 CC 字幕时，是否用本地 whisper 转写

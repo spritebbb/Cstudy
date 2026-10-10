@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .ai import DeepSeekClient, NoteGenerator, QuizGenerator, render_note_file
+from .ai import DeepSeekClient, NoteGenerator, QuizGenerator, Reviewer, render_note_file
 from .ai.notes import safe_filename
 from .bilibili import (
     BilibiliError,
@@ -30,7 +30,7 @@ from .bilibili.video import VideoInfo
 from .config import Config
 from .db import Database
 from .logging_setup import get_logger
-from .models import Question
+from .models import Question, ReviewReport
 from .subtitle import Segment
 from .transcribe import Transcriber, download_audio
 
@@ -68,11 +68,31 @@ class LoadedVideo:
 
 @dataclass
 class NoteResult:
-    """第 2 步的产物。"""
+    """第 2 步的产物。body 是复查之后的版本。"""
 
     note_id: int
     path: Path
     body: str
+    review: ReviewReport = field(default_factory=ReviewReport)
+
+
+@dataclass
+class QuizResult:
+    """第 3 步的产物。questions 是复查之后留下来的那些。"""
+
+    questions: list[Question] = field(default_factory=list)
+    question_ids: list[int] = field(default_factory=list)
+    review: ReviewReport = field(default_factory=ReviewReport)
+
+    @property
+    def summary(self) -> str:
+        if not self.questions:
+            return "0 道（这一节没有可考的 C 语言内容，多半是开场或导学课，跳过即可）"
+        if not self.review.ok:
+            return f"{len(self.questions)} 道（复查没成功，这批题没经过二次把关）"
+        if self.review.removed:
+            return f"{len(self.questions)} 道（复查删掉了 {len(self.review.removed)} 道废题）"
+        return f"{len(self.questions)} 道"
 
 
 @dataclass
@@ -81,22 +101,23 @@ class ImportResult:
 
     video: LoadedVideo
     note: NoteResult
-    questions: list[Question] = field(default_factory=list)
-    question_ids: list[int] = field(default_factory=list)
+    quiz: QuizResult
+
+    @property
+    def questions(self) -> list[Question]:
+        return self.quiz.questions
+
+    @property
+    def question_ids(self) -> list[int]:
+        return self.quiz.question_ids
 
     @property
     def summary(self) -> str:
-        if self.questions:
-            question_line = f"题目：{len(self.questions)} 道"
-        else:
-            question_line = (
-                "题目：0 道（这一节没有可考的 C 语言内容，多半是开场或导学课，跳过即可）"
-            )
         return (
             f"《{self.video.title}》\n"
             f"字幕：{self.video.subtitle_label}，{len(self.video.segments)} 条\n"
             f"笔记：{self.note.path.name}\n"
-            f"{question_line}"
+            f"题目：{self.quiz.summary}"
         )
 
 
@@ -111,6 +132,7 @@ class StudyPipeline:
         self.client = DeepSeekClient(config)
         self.note_generator = NoteGenerator(self.client, config)
         self.quiz_generator = QuizGenerator(self.client, config)
+        self.reviewer = Reviewer(self.client, config)
 
     # ---------- 第 1 步：导入链接 ----------
 
@@ -221,11 +243,17 @@ class StudyPipeline:
         progress("正在生成学习笔记…")
         body = self.note_generator.generate(video.segments, video.title, progress)
 
+        # 生成完先让 AI 复查一遍。写文件和入库的都是复查后的版本，
+        # 免得没把关的内容落盘之后还得手工清。
+        body, review = self.reviewer.review_note(body, video.segments, progress)
+        if not review.ok:
+            progress("笔记复查没成功，这一份没有经过二次把关")
+
         path = self._write_note_file(video, body)
         note_id = self.db.save_note(
             video_id=video.video_id, title=video.title, content=body, file_path=str(path)
         )
-        return NoteResult(note_id=note_id, path=path, body=body)
+        return NoteResult(note_id=note_id, path=path, body=body, review=review)
 
     def _write_note_file(self, video: LoadedVideo, body: str) -> Path:
         notes_dir = self.config.path("notes")
@@ -261,23 +289,28 @@ class StudyPipeline:
         note_body: str,
         source: str = "",
         on_progress: ProgressCallback | None = None,
-    ) -> tuple[list[Question], list[int]]:
+    ) -> QuizResult:
         progress = on_progress or _noop
         progress("正在出题…")
         questions = self.quiz_generator.generate(note_body, progress)
+
+        # 出完再复查一遍：答案错的改掉，广告题和废题删掉。
+        # 只有活下来的才入库——用户拿到的必须是过了关的东西。
+        questions, review = self.reviewer.review_questions(questions, note_body, progress)
+        if not review.ok:
+            progress("题目复查没成功，这批题没有经过二次把关")
+
         question_ids = self.db.save_questions(questions, note_id=note_id, source=source)
-        return questions, question_ids
+        return QuizResult(questions=questions, question_ids=question_ids, review=review)
 
     # ---------- 一键跑完 ----------
 
     def run(self, link: str, on_progress: ProgressCallback | None = None) -> ImportResult:
         video = self.load(link, on_progress)
         note = self.make_notes(video, on_progress)
-        questions, question_ids = self.make_quiz(
+        quiz = self.make_quiz(
             note.note_id, note.body, f"video:{video.bvid}#p{video.page}", on_progress
         )
-        result = ImportResult(
-            video=video, note=note, questions=questions, question_ids=question_ids
-        )
+        result = ImportResult(video=video, note=note, quiz=quiz)
         log.info("导入完成：%s", result.summary.replace("\n", " | "))
         return result

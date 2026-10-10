@@ -30,8 +30,8 @@ from PyQt6.QtWidgets import (
 from ..config import Config
 from ..db import Database
 from ..logging_setup import get_logger
-from ..models import Question
-from ..pipeline import LoadedVideo, NoteResult, StudyPipeline
+from ..models import Question, ReviewReport
+from ..pipeline import LoadedVideo, NoteResult, QuizResult, StudyPipeline
 from .login_dialog import LoginDialog
 from .workers import TaskWorker
 
@@ -203,9 +203,13 @@ class MainWindow(QMainWindow):
 
     def _on_notes_done(self, note: NoteResult) -> None:
         self._note = note
-        self.note_view.setMarkdown(note.body)
+        body = note.body
+        # 复查动了什么要让人看得见，不然用户不知道 AI 背着他改了什么
+        if note.review.describe():
+            body = f"{body}\n\n---\n\n{note.review.describe()}\n"
+        self.note_view.setMarkdown(body)
         self.tabs.setCurrentWidget(self.note_view)
-        self._set_status(f"笔记已生成：{note.path}")
+        self._set_status(f"笔记已生成：{note.path.name}")
         self._refresh_buttons()
 
     def on_make_quiz(self) -> None:
@@ -221,11 +225,10 @@ class MainWindow(QMainWindow):
             source,
         )
 
-    def _on_quiz_done(self, result: tuple[list[Question], list[int]]) -> None:
-        questions, _ = result
-        self.quiz_view.setMarkdown(_render_questions(questions))
+    def _on_quiz_done(self, result: QuizResult) -> None:
+        self.quiz_view.setMarkdown(_render_questions(result.questions, result.review))
         self.tabs.setCurrentWidget(self.quiz_view)
-        self._set_status(f"已生成 {len(questions)} 道题")
+        self._set_status(f"已生成 {result.summary}")
         self._refresh_buttons()
 
     # ---------- 辅助操作 ----------
@@ -263,12 +266,19 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def _render_questions(questions: list[Question]) -> str:
-    """把题目渲染成 Markdown 预览。"""
-    if not questions:
+def _render_questions(
+    questions: list[Question], review: ReviewReport | None = None
+) -> str:
+    """把题目渲染成 Markdown 预览。复查动过什么，写在最前面。"""
+    notice = review.describe() if review is not None else ""
+    if not questions and not notice:
         return "_没有题目_"
 
     parts: list[str] = [f"# 本次共 {len(questions)} 道题", ""]
+    if notice:
+        parts.append(notice)
+        parts.append("")
+
     for index, q in enumerate(questions, start=1):
         parts.append(f"## {index}. {q.type_label}（{q.difficulty}）")
         if q.point:

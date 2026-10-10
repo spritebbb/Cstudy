@@ -64,25 +64,35 @@ class Question:
         }
 
 
-def parse_questions(payload: str | list[dict]) -> list[Question]:
+def parse_json_object(payload: str | dict) -> dict:
+    """把 AI 返回的内容解析成 dict。
+
+    模型有时会用 ```json 围栏包起来，这里一并处理。
+    """
+    if isinstance(payload, dict):
+        return payload
+
+    text = str(payload or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        text = text.rsplit("```", 1)[0]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DataError(f"AI 返回的不是合法 JSON：{exc}") from exc
+    if not isinstance(data, dict):
+        raise DataError("AI 返回的 JSON 顶层应该是一个对象")
+    return data
+
+
+def parse_questions(payload: str | dict | list[dict]) -> list[Question]:
     """把 AI 返回的题目解析成 Question 列表。
 
-    接受 JSON 字符串或已经解析好的列表。单道题有问题就跳过那道，
-    不因为一道题毁掉整次结果。
+    接受 JSON 字符串、含 questions 字段的对象、或已经解析好的列表。
+    单道题有问题就跳过那道，不因为一道题毁掉整次结果。
     """
-    if isinstance(payload, str):
-        text = payload.strip()
-        # 模型有时会用 ```json 包起来
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-            text = text.rsplit("```", 1)[0]
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise DataError(f"AI 返回的不是合法 JSON：{exc}") from exc
-
-    if isinstance(payload, dict):
-        payload = payload.get("questions", [])
+    if isinstance(payload, (str, dict)):
+        payload = parse_json_object(payload).get("questions", [])
     if not isinstance(payload, list):
         raise DataError("AI 返回的题目格式不对，应该是一个列表")
 
@@ -116,3 +126,93 @@ def parse_questions(payload: str | list[dict]) -> list[Question]:
         raise DataError(f"一道题都没解析出来。{detail}")
 
     return questions
+
+
+# ============ AI 复查（二次校准）的结果 ============
+
+
+@dataclass
+class ReviewNote:
+    """复查对某一项的处置记录。
+
+    题目复查时 subject 是题干；笔记复查时是"被改动的内容"的简述。
+    """
+
+    subject: str
+    reason: str
+    index: int = 0         # 题目在原始列表里的序号，从 1 开始；笔记复查用不到，为 0
+
+    def __post_init__(self) -> None:
+        self.subject = _shorten(self.subject, 60) or "（没说是什么）"
+        self.reason = str(self.reason).strip() or "（没说明原因）"
+
+    def describe(self) -> str:
+        where = f"第 {self.index} 题" if self.index else "笔记"
+        return f"{where}「{self.subject}」：{self.reason}"
+
+
+@dataclass
+class ReviewReport:
+    """一次 AI 复查的结果。
+
+    复查失败**不是**致命错误——原来的内容照常保留，只是没人把关而已。
+    所以这里用 ok/error 表达，而不是抛异常。
+    """
+
+    removed: list[ReviewNote] = field(default_factory=list)
+    fixed: list[ReviewNote] = field(default_factory=list)
+    ok: bool = True
+    error: str = ""
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.removed or self.fixed)
+
+    def describe(self) -> str:
+        """写成给用户看的中文说明。没有改动时返回空字符串。"""
+        if not self.ok:
+            return f"**复查没成功**（{self.error}），这次的内容没有经过二次把关。"
+        if not self.changed:
+            return ""
+        lines = ["**复查做了这些调整：**"]
+        lines += [f"- 改了 {note.describe()}" for note in self.fixed]
+        lines += [f"- 删了 {note.describe()}" for note in self.removed]
+        return "\n".join(lines)
+
+
+def _shorten(text: str, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def parse_review_report(payload: Any) -> ReviewReport:
+    """从复查返回的 JSON 里取出 removed / fixed。
+
+    这是"系统边界之外的输入"，字段缺了、类型不对都不能抛异常——
+    复查本身出问题不该把整个导入搞挂。解析不出来的部分直接忽略。
+    """
+    if not isinstance(payload, dict):
+        return ReviewReport(ok=False, error="AI 返回的不是预期的 JSON 结构")
+
+    def collect(key: str) -> list[ReviewNote]:
+        raw = payload.get(key)
+        if not isinstance(raw, list):
+            return []
+        notes: list[ReviewNote] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item.get("index") or 0)
+            except (TypeError, ValueError):
+                index = 0
+            notes.append(
+                ReviewNote(
+                    subject=str(item.get("subject") or ""),
+                    reason=str(item.get("reason") or ""),
+                    index=index,
+                )
+            )
+        return notes
+
+    return ReviewReport(removed=collect("removed"), fixed=collect("fixed"))
