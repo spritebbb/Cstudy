@@ -27,6 +27,31 @@ DEFAULT_MAX_CHARS = 8000
 # 题号的各种写法：1.  1、  1)  1）  第1题
 QUESTION_START = re.compile(r"^\s*(?:\d{1,3}\s*[.、,，)）]|第\s*\d+\s*题)", re.MULTILINE)
 
+# 文末答案区的标题。要**独占一行**才算——"答案填写在答题纸上"这种不是标题。
+# 行尾允许 \r：PDF/Word 抽出来的文字常常是 \r\n 换行，漏了它这一行就匹配不上。
+ANSWER_HEADING = re.compile(
+    r"^[ \t]*(?:参考答案|标准答案|答案与解析|参考答案与解析|试题答案|答案)"
+    r"[ \t]*[:：]?[ \t\r]*$",
+    re.MULTILINE,
+)
+
+# 答案区落在全文这么靠后，才认它是答案区（防止误切中间的"答案"小标题）
+ANSWER_ZONE_START = 0.4
+
+
+def split_answers(text: str) -> tuple[str, str]:
+    """把文末的答案区切出来，返回 (题目部分, 答案部分)。
+
+    **必须切出来单独用**：按题号切块时，答案区会被切到另一块去，
+    结果那块有答案没题目、这块有题目没答案，AI 只能瞎猜答案。
+    实测踩过：一份 8473 字的卷子，答案区从第 7895 字开始，而切块边界在 7976——
+    题目和答案正好被切在两块里。
+    """
+    for match in ANSWER_HEADING.finditer(text):
+        if match.start() >= len(text) * ANSWER_ZONE_START:
+            return text[: match.start()], text[match.start() :]
+    return text, ""
+
 
 @dataclass
 class ImportOutcome:
@@ -132,15 +157,28 @@ class QuestionImporter:
         self.skip_types = {str(item).strip().lower() for item in raw if str(item).strip()}
 
     def parse(
-        self, text: str, on_progress: ProgressCallback | None = None
+        self,
+        text: str,
+        on_progress: ProgressCallback | None = None,
+        reference: str = "",
     ) -> ImportOutcome:
-        """把文字解析成题目。解析不出任何题目（或被过滤光）会抛异常。"""
+        """把文字解析成题目。解析不出任何题目（或被过滤光）会抛异常。
+
+        reference 是**外部的**配套答案（比如同文件夹里的"参考答案.pdf"）。
+        文末自带的答案区会自动切出来，不用传。
+        """
         text = (text or "").strip()
         if not text:
             raise ValueError("没有可导入的内容")
 
-        chunks = split_by_questions(text, self.max_chars)
-        log.info("导入题库：%d 字，切成 %d 块", len(text), len(chunks))
+        # 答案区切出来单独用，别让它跟着题号被切到别的块去
+        body, answers = split_answers(text)
+        reference = "\n\n".join(part for part in (reference, answers) if part.strip())
+        if reference:
+            log.info("配套答案 %d 字，会附给每一段", len(reference))
+
+        chunks = split_by_questions(body, self.max_chars)
+        log.info("导入题库：%d 字，切成 %d 块", len(body), len(chunks))
 
         questions: list[Question] = []
         failed = 0
@@ -151,7 +189,10 @@ class QuestionImporter:
                 raw = self.client.chat_json(
                     [
                         {"role": "system", "content": prompts.IMPORT_SYSTEM},
-                        {"role": "user", "content": prompts.import_user_prompt(chunk)},
+                        {
+                            "role": "user",
+                            "content": prompts.import_user_prompt(chunk, reference),
+                        },
                     ]
                 )
                 questions.extend(parse_questions(raw))

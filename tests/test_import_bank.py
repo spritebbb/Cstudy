@@ -15,7 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import pytest  # noqa: E402
 
-from import_bank import collect, docx_text, extract, rough_question_count  # noqa: E402
+from import_bank import (  # noqa: E402
+    collect,
+    docx_text,
+    extract,
+    find_answer_file,
+    is_answer_key,
+    rough_question_count,
+)
 
 
 def make_docx(path: Path, paragraphs: list[str]) -> None:
@@ -103,3 +110,54 @@ class TestRoughQuestionCount:
 
     def test_does_not_count_numbers_mid_line(self):
         assert rough_question_count("答案：1. 甲 2. 乙") == 0
+
+
+class TestFindAnswerFile:
+    """题目和答案常分成两个文件，按文件名把它们配上。"""
+
+    def test_pairs_by_name(self, tmp_path):
+        (tmp_path / "模拟试卷11.doc").write_bytes(b"x")
+        (tmp_path / "模拟试卷11参考答案.doc").write_bytes(b"x")
+
+        found = find_answer_file(tmp_path / "模拟试卷11.doc")
+
+        assert found is not None and found.name == "模拟试卷11参考答案.doc"
+
+    def test_pairs_plain_answer_suffix(self, tmp_path):
+        (tmp_path / "试卷1.doc").write_bytes(b"x")
+        (tmp_path / "试卷1答案.doc").write_bytes(b"x")
+
+        assert find_answer_file(tmp_path / "试卷1.doc").name == "试卷1答案.doc"
+
+    def test_unrelated_neighbours_are_not_paired(self, tmp_path):
+        """`谭浩强课后答案.pdf` 和 `小绿书.pdf` 同处一个文件夹，不能配成一对。
+
+        配错的答案看着像真的，比标着"AI 推断"的更坑——所以拿不准就不配。
+        """
+        (tmp_path / "小绿书.pdf").write_bytes(b"x")
+        (tmp_path / "谭浩强课后答案.pdf").write_bytes(b"x")
+
+        assert find_answer_file(tmp_path / "小绿书.pdf") is None
+
+    def test_no_answer_file_returns_none(self, tmp_path):
+        (tmp_path / "试卷1.doc").write_bytes(b"x")
+        (tmp_path / "试卷2.doc").write_bytes(b"x")
+
+        assert find_answer_file(tmp_path / "试卷1.doc") is None
+
+
+class TestIsAnswerKey:
+    """答案文件不该再当题目导一遍（导出来必然是 0 道，白花一次 AI 调用）。"""
+
+    def test_recognises_the_companion_answer_file(self, tmp_path):
+        (tmp_path / "模拟试卷11.doc").write_bytes(b"x")
+        (tmp_path / "模拟试卷11参考答案.doc").write_bytes(b"x")
+
+        assert is_answer_key(tmp_path / "模拟试卷11参考答案.doc")
+        assert not is_answer_key(tmp_path / "模拟试卷11.doc")
+
+    def test_a_paper_with_answers_attached_is_not_an_answer_key(self, tmp_path):
+        """`试卷附答案六.pdf` 自己带题目和答案，不是纯答案文件。"""
+        (tmp_path / "专升本C语言 试卷附答案六.pdf").write_bytes(b"x")
+
+        assert not is_answer_key(tmp_path / "专升本C语言 试卷附答案六.pdf")

@@ -15,7 +15,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cstudy.ai.client import AIError  # noqa: E402
-from cstudy.ai.importer import QuestionImporter, dedupe, split_by_questions  # noqa: E402
+from cstudy.ai.importer import (  # noqa: E402
+    QuestionImporter,
+    dedupe,
+    split_answers,
+    split_by_questions,
+)
 from cstudy.config import Config, ConfigError  # noqa: E402
 from cstudy.models import DataError, Question  # noqa: E402
 
@@ -260,3 +265,53 @@ class TestTypeFiltering:
         message = str(exc.value)
         assert "skip_types" in message
         assert "- choice" in message
+
+
+class TestSplitAnswers:
+    """把文末答案区切出来单独用。
+
+    不切出来的话，按题号切块时答案会被切到另一块去——那块有答案没题目、
+    这块有题目没答案，AI 只能瞎猜答案。实测踩过：8473 字的卷子答案区从
+    第 7895 字开始，切块边界在 7976，正好切在两块中间。
+    """
+
+    def test_splits_answer_section_at_the_end(self):
+        text = "1. 甲\n2. 乙\n" + "x" * 400 + "\n参考答案\n1. A\n2. B\n"
+        body, answers = split_answers(text)
+
+        assert body.endswith("x" * 400 + "\n")
+        assert "1. A" not in body
+        assert answers.startswith("参考答案")
+        assert "1. A" in answers
+
+    def test_handles_crlf_line_endings(self):
+        """PDF/Word 抽出来的文字常是 \r\n 换行——漏了 \r 这行就匹配不上。"""
+        text = "1. 甲\n" + "x" * 400 + "\r\n参考答案\r\n1. A\r\n"
+
+        body, answers = split_answers(text)
+
+        assert answers, "\r\n 换行时没认出答案区"
+        assert "1. A" in answers
+
+    def test_no_answer_section_returns_whole_text(self):
+        text = "1. 甲\n2. 乙\n"
+        assert split_answers(text) == (text, "")
+
+    def test_sentence_containing_the_word_is_not_a_heading(self):
+        """"答案填写在答题纸上"不是标题，不能拿它当切点。"""
+        text = "答案填写在答题纸的相应位置上。\n" + "x" * 400
+        assert split_answers(text)[1] == ""
+
+    def test_heading_near_the_top_is_not_an_answer_zone(self):
+        """开头的"答案"小标题不算——答案区在文末。"""
+        text = "答案\n" + "x" * 400
+        assert split_answers(text)[1] == ""
+
+    def test_reference_is_passed_to_every_chunk(self):
+        """配套答案要附给每一段，不然有答案的那段没题目。"""
+        text = "1. 甲\n2. 乙\n" + "x" * 400 + "\n参考答案\n1. A\n2. B\n"
+        client = FakeClient(questions_json(1))
+        QuestionImporter(client, make_config()).parse(text)
+
+        prompts_sent = [call[-1]["content"] for call in client.calls]
+        assert all("参考答案" in p for p in prompts_sent)
