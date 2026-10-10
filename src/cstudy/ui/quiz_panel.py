@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from html import escape
 from itertools import zip_longest
-
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -31,6 +31,7 @@ from ..db import Database
 from ..grading import describe_expected, grade_choice, normalize_choice_answer
 from ..logging_setup import get_logger
 from ..models import Question
+from .rendering import material_html
 
 log = get_logger(__name__)
 
@@ -213,7 +214,7 @@ class QuizPanel(QWidget):
             f"{question.exam_type_label}　·　难度 {question.difficulty}"
             + (f"　·　知识点：{question.point}" if question.point else "")
         )
-        self.question_view.setMarkdown(question.question)
+        self.question_view.setHtml(material_html(question.question))
 
         self._fill_inputs(question, item)
         self._hide_feedback()
@@ -332,21 +333,21 @@ class QuizPanel(QWidget):
         question = item.question
         expected = self._reference_text(question)
 
-        lines: list[str] = []
+        parts: list[str] = []
         if auto is True:
-            lines.append("### ✅ 答对了")
+            parts.append("<h3 style='color:#1e8449; margin:4px 0;'>✅ 答对了</h3>")
         elif auto is False:
-            lines.append("### ❌ 答错了")
+            parts.append("<h3 style='color:#c0392b; margin:4px 0;'>❌ 答错了</h3>")
         if extra:
-            lines.append(extra)
+            parts.append(f"<p>{escape(extra)}</p>")
 
-        lines.append("")
-        lines.append(f"**参考答案**：{expected}")
+        parts.append("<p style='margin:8px 0 2px 0;'><b>参考答案</b></p>")
+        parts.append(material_html(expected))
         if question.explanation:
-            lines.append("")
-            lines.append(f"**解析**：{question.explanation}")
+            parts.append("<p style='margin:8px 0 2px 0;'><b>解析</b></p>")
+            parts.append(material_html(question.explanation))
 
-        self.feedback_view.setMarkdown("\n".join(lines))
+        self.feedback_view.setHtml("".join(parts))
         self.feedback_view.show()
 
         if auto is None:

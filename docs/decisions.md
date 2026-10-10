@@ -582,6 +582,35 @@ AI 看到题干里有代码就判成 `coding`。
 
 ---
 
+## 2026-10-11 题干不能当 Markdown 渲染
+
+用户截图反馈"这些排版太难看了"，两个症状：
+
+1. **`#include <stdio.h>` 变成了超大的标题**——因为 `#` 是 Markdown 的标题符号
+2. **整段代码挤成一长条**——因为 Markdown 里**单个换行等于空格**，
+   代码的每一行被拼成了一句话
+
+根因是 `question_view.setMarkdown(question.question)`：题干是**代码**，不是 Markdown。
+参考答案和解析（`feedback_view`）也是同一个毛病，"导入题库"的预览同理。
+
+**修法**：`ui/rendering.py` 的 `material_html()`——先 `escape()` 转义，
+再放进 `<pre style="white-space:pre-wrap">`。`<pre>` 保住换行和空格、自带等宽字体
+（代码看着对得齐），`pre-wrap` 让太长的行照样折行，转义保证 `<stdio.h>`、`&&`
+这些不会被当成 HTML 标签。
+
+三处都用它：答题页的题干、参考答案和解析、导入预览。
+
+**教训**：**用户给的内容不是 Markdown，别拿 Markdown 渲染器去显示它。**
+`setMarkdown` 看着方便，但它会重新解释文本——而代码里满是 `#`、`*`、缩进、
+单个换行，全都是 Markdown 的语法。凡是显示"原材料"（题干、答案、代码、
+用户粘贴的文字），一律用 `<pre>` 或纯文本。
+
+**验证方式**：这个项目的界面没法真的点，但可以**离屏渲染成 PNG 看一眼**——
+排版问题光看代码判断不了。写了 `scripts/_render_preview.py` 临时脚本
+（`QuizPanel.grab().save(...)`）渲染出来确认过了。
+
+---
+
 ## 待办 / 已知风险
 
 - **图片识别未经实测**：`deepseek-flash` 支持图片输入是从 `/models` 接口的

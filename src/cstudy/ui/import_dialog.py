@@ -27,6 +27,7 @@ from ..config import Config
 from ..db import Database
 from ..logging_setup import get_logger
 from ..models import Question
+from .rendering import material_html
 from .workers import friendly_error
 
 log = get_logger(__name__)
@@ -198,26 +199,30 @@ class ImportDialog(QDialog):
 
 
 def render_questions_markdown(questions: list[Question]) -> str:
-    """把题目渲染成预览用的 Markdown。"""
+    """把题目渲染成预览用的 Markdown。
+
+    题干、答案、解析都走 `material_html()`——**它们里面是代码，不能直接当
+    Markdown 渲染**（`#include` 会变成大标题、换行会被吞掉）。
+    """
     if not questions:
         return "_没有解析出题目_"
 
     parts: list[str] = [f"# 最终保留 {len(questions)} 道题", ""]
     for index, question in enumerate(questions, start=1):
-        parts.append(f"## {index}. {question.type_label}（{question.difficulty}）")
+        parts.append(f"## {index}. {question.exam_type_label}（{question.difficulty}）")
         if question.point:
             parts.append(f"**知识点**：{question.point}")
         parts.append("")
-        parts.append(question.question)
-        parts.append("")
+        parts.append(material_html(question.question))
         for option in question.options:
             parts.append(f"- {option}")
         if question.options:
             parts.append("")
-        parts.append(f"**答案**：{question.answer}")
+        parts.append("**答案**：")
+        parts.append(material_html(question.answer))
         if question.explanation:
-            parts.append("")
-            parts.append(f"**解析**：{question.explanation}")
+            parts.append("**解析**：")
+            parts.append(material_html(question.explanation))
         parts.append("")
         parts.append("---")
         parts.append("")

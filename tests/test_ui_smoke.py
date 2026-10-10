@@ -25,6 +25,8 @@ from cstudy.config import Config  # noqa: E402
 from cstudy.db import Database  # noqa: E402
 from cstudy.models import Question  # noqa: E402
 from cstudy.ui.filter_dialog import FilterDialog  # noqa: E402
+from cstudy.ui.quiz_panel import QuizPanel  # noqa: E402
+from cstudy.ui.rendering import material_html  # noqa: E402
 from cstudy.ui.syllabus_panel import SyllabusPanel  # noqa: E402
 from cstudy.ui.wrong_book_panel import WrongBookPanel  # noqa: E402
 
@@ -190,3 +192,73 @@ class TestWrongBookPanel:
         assert "还欠着" not in panel.summary_label.text()
         assert "清空了" in panel.summary_label.text()
         assert "甲" in panel.browser.toPlainText()
+
+
+class TestMaterialHtml:
+    """题干/答案/解析不能当 Markdown 渲染——它们里面是代码。
+
+    真踩过：`#include` 被当成 Markdown 标题渲染成巨大的 "include"，
+    而且 Markdown 里单个换行等于空格，代码的每一行被拼成一长条。
+    """
+
+    def test_hash_include_is_not_a_heading(self):
+        html = material_html("#include <stdio.h>")
+
+        assert "<h1" not in html and "<h2" not in html
+        assert "#include" in html          # 原文一个字没少
+
+    def test_newlines_survive(self):
+        html = material_html("int main()\n{\n    return 0;\n}")
+
+        assert html.count("\n") == 3
+
+    def test_angle_brackets_are_escaped(self):
+        """不转义的话 `<stdio.h>` 会被 HTML 当标签吃掉。"""
+        html = material_html("#include <stdio.h>")
+
+        assert "&lt;stdio.h&gt;" in html
+        assert "<stdio.h>" not in html
+
+    def test_ampersand_is_escaped(self):
+        assert "&amp;&amp;" in material_html("if (a && b)")
+
+    def test_empty_text_gives_nothing(self):
+        assert material_html("") == ""
+        assert material_html("   \n  ") == ""
+
+
+class TestQuizPanelRendering:
+    def test_code_in_the_stem_keeps_its_line_breaks(self, qapp, db: Database):
+        """这是那两个排版 bug 的回归测试。"""
+        stem = "#include <stdio.h>\nint main()\n{\n    return 0;\n}"
+        question_id = db.save_questions([Question(type="fill", question=stem, answer="1")])[0]
+        panel = QuizPanel(db)
+
+        panel.load([Question.from_row(db.query_questions()[0])], [question_id])
+
+        shown = panel.question_view.toPlainText()
+        assert "#include <stdio.h>" in shown, "`#` 被 Markdown 吃掉了"
+        assert "\n" in shown, "换行被 Markdown 吞了，代码会挤成一长条"
+        assert shown.count("\n") >= 4
+
+    def test_multiline_answer_keeps_its_line_breaks(self, qapp, db: Database):
+        """参考答案也可能是多行的（程序运行结果就分好几行）。"""
+        answer = "12345\n234\n3"
+        db.save_questions(
+            [
+                Question(
+                    type="reading",
+                    question="阅读程序，写出输出。\nint main() { return 0; }",
+                    answer=answer,
+                )
+            ]
+        )
+        panel = QuizPanel(db)
+        panel.load([Question.from_row(db.query_questions()[0])], [1])
+
+        panel.answer_edit.setPlainText("随便写点")
+        panel._submit()
+
+        shown = panel.feedback_view.toPlainText()
+        assert "12345" in shown and "234" in shown
+        assert shown.count("\n") >= 2
