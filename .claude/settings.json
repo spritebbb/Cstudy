@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${CLAUDE_PROJECT_DIR:-.}\"; \"$P/.venv/Scripts/python.exe\" \"$P/.claude/hooks/guard_sensitive.py\"",
+            "timeout": 20,
+            "statusMessage": "检查是否碰到密钥或运行时数据…"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=\"${CLAUDE_PROJECT_DIR:-.}\"; \"$P/.venv/Scripts/python.exe\" \"$P/.claude/hooks/run_tests.py\"",
+            "timeout": 300,
+            "statusMessage": "跑测试验证改动…"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Edit(.env)",
+      "Edit(**/.env)"
+    ]
+  }
+}
