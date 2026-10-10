@@ -38,6 +38,9 @@ class Question:
     options: list[str] = field(default_factory=list)
     difficulty: str = "medium"
     point: str = ""
+    # 对应考纲知识点。point 是 AI 自由写的文本，point_id 才是跟考纲对齐的，
+    # 由 scripts/map_syllabus.py 事后映射填上。没映射上就是 None。
+    point_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.type not in VALID_TYPES:
@@ -62,6 +65,7 @@ class Question:
             "type": self.type,
             "difficulty": self.difficulty,
             "point": self.point,
+            "point_id": self.point_id,
             "question": self.question,
             "options": json.dumps(self.options, ensure_ascii=False) if self.options else None,
             "answer": self.answer,
@@ -98,6 +102,13 @@ class Question:
             log.warning("选择题的选项不可用，退化成填空题：%.40s", field("question"))
             qtype = "fill"
 
+        point_id: int | None = None
+        if "point_id" in row.keys() and row["point_id"] is not None:
+            try:
+                point_id = int(row["point_id"])
+            except (TypeError, ValueError):
+                log.warning("point_id 不是整数，当作没映射：%r", row["point_id"])
+
         return cls(
             type=qtype,
             question=field("question"),
@@ -106,6 +117,7 @@ class Question:
             options=options,
             difficulty=field("difficulty", "medium").lower() or "medium",
             point=field("point"),
+            point_id=point_id,
         )
 
 

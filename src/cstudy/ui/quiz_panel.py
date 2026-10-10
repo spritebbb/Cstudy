@@ -75,7 +75,7 @@ class QuizPanel(QWidget):
         top.addWidget(self.progress_label)
         top.addWidget(self.score_label)
         top.addStretch(1)
-        self.load_all_button = QPushButton("从题库加载全部题目")
+        self.load_all_button = QPushButton("从题库挑题")
         self.load_all_button.clicked.connect(self.load_all_requested.emit)
         self.restart_button = QPushButton("重做这批")
         self.restart_button.clicked.connect(self._restart)

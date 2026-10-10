@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -29,13 +30,16 @@ from PyQt6.QtWidgets import (
 
 from ..config import Config
 from ..db import Database
+from ..exam import build_exam_paper
 from ..logging_setup import get_logger
 from ..models import Question, ReviewReport
 from ..pipeline import LoadedVideo, NoteResult, QuizResult, StudyPipeline
+from .filter_dialog import FilterDialog
 from .import_dialog import ImportDialog
 from .login_dialog import LoginDialog
 from .quiz_panel import QuizPanel
-from .workers import TaskWorker
+from .syllabus_panel import SyllabusPanel
+from .workers import TaskWorker, friendly_error
 
 log = get_logger(__name__)
 
@@ -91,6 +95,10 @@ class MainWindow(QMainWindow):
         self.quiz_button.clicked.connect(self.on_make_quiz)
         action_row.addWidget(self.quiz_button)
 
+        self.exam_button = QPushButton("组一套真题")
+        self.exam_button.clicked.connect(self.on_build_exam)
+        action_row.addWidget(self.exam_button)
+
         self.login_button = QPushButton("B 站扫码登录")
         self.login_button.clicked.connect(self.on_login)
         action_row.addWidget(self.login_button)
@@ -123,6 +131,10 @@ class MainWindow(QMainWindow):
         self.quiz_panel.load_all_requested.connect(self.on_load_all_questions)
         self.tabs.addTab(self.quiz_panel, "答题")
 
+        # 考纲覆盖度：哪些知识点还没题。导入新题后要 refresh 一次。
+        self.syllabus_panel = SyllabusPanel(self.db)
+        self.tabs.addTab(self.syllabus_panel, "考纲")
+
         root.addWidget(self.tabs, stretch=1)
 
         # --- 状态栏 ---
@@ -141,6 +153,7 @@ class MainWindow(QMainWindow):
         self.import_button.setEnabled(not busy)
         self.note_button.setEnabled(not busy and self._video is not None)
         self.quiz_button.setEnabled(not busy and self._note is not None)
+        self.exam_button.setEnabled(not busy)
         self.login_button.setEnabled(not busy)
 
     def _set_status(self, text: str) -> None:
@@ -160,6 +173,9 @@ class MainWindow(QMainWindow):
             return
         summary = "  ".join(f"{k} {v}" for k, v in stats.items())
         self.stats_label.setText(summary)
+        # 题目数变了，考纲覆盖度也跟着变。放这儿是为了让"哪次导入/出题之后忘了刷新"
+        # 这种问题不可能发生——凡是要更新统计的地方，覆盖度一定一起更新。
+        self.syllabus_panel.refresh()
 
     # ---------- 后台任务通用入口 ----------
 
@@ -247,16 +263,61 @@ class MainWindow(QMainWindow):
         self._refresh_buttons()
 
     def on_load_all_questions(self) -> None:
-        """从题库里把所有题目捞出来刷——关掉软件重开之后也能接着刷。"""
+        """从题库里挑题来刷——先弹筛选框选条件，选完再加载。
+
+        题库一千多道，全塞进一个队列没法用，所以这里默认也要过一遍筛选。
+        对话框里默认全选，直接回车就是"全刷"。
+        """
+        dialog = FilterDialog(self.db, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
         try:
-            rows = self.db.list_questions()
+            rows = self.db.query_questions(**dialog.criteria())
         except Exception:
-            log.exception("从题库读题目失败")
+            log.exception("按条件读题目失败")
             QMessageBox.warning(
-                self, "读不出来", "从题库读题目时出了点问题，详细原因在 logs/cstudy.log。"
+                self, "读不出来", "读题目时出了点问题，详细原因在 logs/cstudy.log。"
             )
             return
 
+        questions, question_ids = self._to_questions(rows)
+        if not questions:
+            QMessageBox.information(
+                self, "没有符合条件的题", "条件太窄了，放宽一点再试一次。"
+            )
+            return
+
+        self.quiz_panel.load(questions, question_ids)
+        self.tabs.setCurrentWidget(self.quiz_panel)
+        self._set_status(f"挑了 {len(questions)} 道题来刷")
+
+    def on_build_exam(self) -> None:
+        """按考试题型分值从题库里组一套卷子，直接进刷题界面。
+
+        不调 AI——只是从已有的题里按比例随机抽。
+        """
+        try:
+            paper = build_exam_paper(self.db, self.config)
+        except Exception as exc:
+            log.exception("组卷失败")
+            QMessageBox.warning(self, "组卷失败", f"组卷时出了点问题：{friendly_error(exc)}")
+            return
+
+        if not paper.questions:
+            QMessageBox.information(
+                self,
+                "题库里还没有题",
+                "题库是空的。先「导入题库」，或者生成一批题，再来组卷。",
+            )
+            return
+
+        self.quiz_panel.load(paper.questions, paper.question_ids)
+        self.tabs.setCurrentWidget(self.quiz_panel)
+        self._set_status(paper.summary)
+
+    def _to_questions(self, rows) -> tuple[list[Question], list[int]]:
+        """把数据库的行转成 Question 列表。读不出来的那条跳过，不连累其他题。"""
         questions: list[Question] = []
         question_ids: list[int] = []
         for row in rows:
@@ -264,16 +325,8 @@ class MainWindow(QMainWindow):
                 questions.append(Question.from_row(row))
                 question_ids.append(int(row["id"]))
             except Exception:
-                # 一条坏数据不该让整批题都加载不了
                 log.warning("跳过一条读不出来的题目：id=%s", row["id"], exc_info=True)
-
-        if not questions:
-            self._set_status("题库里还没有题目，先导入视频生成一批吧。")
-            return
-
-        self.quiz_panel.load(questions, question_ids)
-        self.tabs.setCurrentWidget(self.quiz_panel)
-        self._set_status(f"从题库加载了 {len(questions)} 道题")
+        return questions, question_ids
 
     # ---------- 辅助操作 ----------
 
@@ -292,8 +345,9 @@ class MainWindow(QMainWindow):
     def _on_bank_imported(self, count: int) -> None:
         self._set_status(f"题库新增 {count} 道题")
         self._update_stats()
-        # 顺手加载进答题区，省得用户再点一次
-        self.on_load_all_questions()
+        # 题库变了，考纲覆盖度跟着变。这里**不**顺手加载进答题区——
+        # 那会弹一个筛选框，用户刚导完题就被打断，很烦。
+        self.syllabus_panel.refresh()
 
     def on_open_notes(self) -> None:
         notes_dir = self.config.path("notes")

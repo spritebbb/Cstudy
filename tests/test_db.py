@@ -219,3 +219,136 @@ class TestAnswerRecording:
             ]
         )
         assert db.list_questions()[0]["point"] == "字符与 ASCII"
+
+
+class TestQueryQuestions:
+    """按条件挑题——筛选刷题和组卷都靠它。"""
+
+    @pytest.fixture
+    def stocked(self, db: Database) -> Database:
+        db.save_questions(
+            [
+                Question(type="fill", question="填空甲", answer="1"),
+                Question(type="fill", question="填空乙", answer="2"),
+                Question(type="reading", question="阅读甲", answer="3"),
+                Question(type="coding", question="编程甲", answer="4"),
+            ],
+            source="卷A",
+        )
+        db.save_questions(
+            [Question(type="fill", question="别的卷的填空", answer="5")], source="卷B"
+        )
+        return db
+
+    def test_no_filter_returns_everything(self, stocked: Database):
+        assert len(stocked.query_questions()) == 5
+
+    def test_filters_by_type(self, stocked: Database):
+        rows = stocked.query_questions(types=["fill"])
+        assert len(rows) == 3
+        assert {row["type"] for row in rows} == {"fill"}
+
+    def test_filters_by_multiple_types(self, stocked: Database):
+        assert len(stocked.query_questions(types=["reading", "coding"])) == 2
+
+    def test_filters_by_source(self, stocked: Database):
+        assert len(stocked.query_questions(sources=["卷A"])) == 4
+
+    def test_combines_conditions(self, stocked: Database):
+        rows = stocked.query_questions(types=["fill"], sources=["卷B"])
+        assert len(rows) == 1
+        assert rows[0]["question"] == "别的卷的填空"
+
+    def test_limit_caps_the_result(self, stocked: Database):
+        assert len(stocked.query_questions(limit=2)) == 2
+
+    def test_shuffle_limit_returns_distinct_rows(self, stocked: Database):
+        """随机抽 N 道不能抽到重复的——组卷最怕一套卷子里同一道题出现两次。"""
+        rows = stocked.query_questions(shuffle=True, limit=4)
+        ids = [row["id"] for row in rows]
+        assert len(ids) == len(set(ids)) == 4
+
+    def test_empty_type_list_means_no_filter(self, stocked: Database):
+        """空列表按"不筛"处理，不然界面上不勾任何题型会一道题都出不来。"""
+        assert len(stocked.query_questions(types=[])) == 5
+
+    def test_list_sources(self, stocked: Database):
+        assert stocked.list_sources() == ["卷A", "卷B"]
+
+
+class TestSyllabusCoverage:
+    """考纲覆盖度：哪些知识点还没练到。"""
+
+    @pytest.fixture
+    def with_points(self, db: Database) -> Database:
+        self.chapter1 = db.upsert_syllabus_point("指针", "第8章", 1)
+        self.chapter2 = db.upsert_syllabus_point("预处理命令", "第1章", 2)
+        db.save_questions([Question(type="fill", question="指针题", answer="1")])
+        return db
+
+    def test_point_without_questions_still_shows_up(self, with_points: Database):
+        """**没题的知识点必须也在结果里**——那正是用户要看的东西。"""
+        rows = {row["name"]: row["question_count"] for row in with_points.coverage()}
+
+        assert rows == {"指针": 0, "预处理命令": 0}
+
+    def test_counts_questions_linked_to_a_point(self, with_points: Database):
+        with_points.assign_points({"": with_points.upsert_syllabus_point("指针", "第8章", 1)})
+
+        counts = {row["name"]: row["question_count"] for row in with_points.coverage()}
+        assert counts["指针"] == 1
+        assert counts["预处理命令"] == 0
+
+    def test_points_grouped_by_chapter(self, with_points: Database):
+        grouped = with_points.points_by_chapter()
+
+        assert set(grouped) == {"第8章", "第1章"}
+        assert [row["name"] for row in grouped["第8章"]] == ["指针"]
+
+
+class TestAssignPoints:
+    def test_maps_by_point_text(self, db: Database):
+        db.save_questions(
+            [
+                Question(type="fill", question="甲", answer="1", point="递归函数"),
+                Question(type="fill", question="乙", answer="2", point="递归函数"),
+                Question(type="fill", question="丙", answer="3", point="别的"),
+            ]
+        )
+        point_id = db.upsert_syllabus_point("函数的递归调用", "第7章", 1)
+
+        changed = db.assign_points({"递归函数": point_id})
+
+        assert changed == 2
+        assert db.count("questions") == 3
+        linked = db.query_questions(point_ids=[point_id])
+        assert {row["question"] for row in linked} == {"甲", "乙"}
+
+    def test_does_not_overwrite_an_existing_mapping(self, db: Database):
+        """重复跑不能把已经映射好的冲掉，也不能冲掉人工纠正过的。"""
+        db.save_questions([Question(type="fill", question="甲", answer="1", point="递归")])
+        first = db.upsert_syllabus_point("函数的递归调用", "第7章", 1)
+        second = db.upsert_syllabus_point("数组", "第6章", 2)
+        db.assign_points({"递归": first})
+
+        changed = db.assign_points({"递归": second})
+
+        assert changed == 0
+        assert db.query_questions(point_ids=[first])[0]["question"] == "甲"
+
+
+class TestPointIdPersistence:
+    def test_point_id_survives_a_round_trip(self, db: Database):
+        point_id = db.upsert_syllabus_point("指针", "第8章", 1)
+        db.save_questions(
+            [Question(type="fill", question="甲", answer="1", point="指针", point_id=point_id)]
+        )
+
+        restored = Question.from_row(db.query_questions()[0])
+
+        assert restored.point_id == point_id
+
+    def test_missing_point_id_reads_as_none(self, db: Database):
+        db.save_questions([Question(type="fill", question="甲", answer="1")])
+
+        assert Question.from_row(db.query_questions()[0]).point_id is None

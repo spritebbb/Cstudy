@@ -176,10 +176,10 @@ class Database:
                 cur = conn.execute(
                     """
                     INSERT INTO questions
-                        (type, difficulty, point, note_id, question, options,
+                        (type, difficulty, point, point_id, note_id, question, options,
                          answer, explanation, source)
-                    VALUES (:type, :difficulty, :point, :note_id, :question, :options,
-                            :answer, :explanation, :source)
+                    VALUES (:type, :difficulty, :point, :point_id, :note_id, :question,
+                            :options, :answer, :explanation, :source)
                     """,
                     {**row, "note_id": note_id, "source": source},
                 )
@@ -194,6 +194,47 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM questions WHERE note_id = ? ORDER BY id", (note_id,)
         ).fetchall()
+
+    def query_questions(
+        self,
+        types: list[str] | None = None,
+        point_ids: list[int] | None = None,
+        sources: list[str] | None = None,
+        limit: int | None = None,
+        shuffle: bool = False,
+    ) -> list[sqlite3.Row]:
+        """按条件挑题。筛选刷题和组卷都用这个。
+
+        条件都是可选的，一个都不传就是"全部题目"。值一律走参数占位符，
+        不拼进 SQL 字符串里。
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if types:
+            where.append(f"type IN ({','.join('?' * len(types))})")
+            params.extend(types)
+        if point_ids:
+            where.append(f"point_id IN ({','.join('?' * len(point_ids))})")
+            params.extend(point_ids)
+        if sources:
+            where.append(f"source IN ({','.join('?' * len(sources))})")
+            params.extend(sources)
+
+        sql = "SELECT * FROM questions"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY RANDOM()" if shuffle else " ORDER BY id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return self.conn.execute(sql, params).fetchall()
+
+    def list_sources(self) -> list[str]:
+        """题目来自哪些文件（给筛选界面的下拉框用）。"""
+        rows = self.conn.execute(
+            "SELECT DISTINCT source FROM questions WHERE source != '' ORDER BY source"
+        ).fetchall()
+        return [str(row["source"]) for row in rows]
 
     # ---------- 答题记录 ----------
 
@@ -268,6 +309,47 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM syllabus_points ORDER BY sort_order, id"
         ).fetchall()
+
+    def points_by_chapter(self) -> dict[str, list[sqlite3.Row]]:
+        """考纲知识点按章分组，给筛选界面和覆盖度用。"""
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in self.list_syllabus_points():
+            grouped.setdefault(str(row["chapter"] or "（没写章节）"), []).append(row)
+        return grouped
+
+    def coverage(self) -> list[sqlite3.Row]:
+        """每个考纲知识点有多少道题。
+
+        **没题的也要返回（0 道）**——用 LEFT JOIN 就是为了这个。
+        用户要看的是"哪些知识点还没练到"，漏掉 0 的那些，这个功能就没意义了。
+        """
+        return self.conn.execute(
+            """
+            SELECT sp.id, sp.chapter, sp.name, COUNT(q.id) AS question_count
+            FROM syllabus_points sp
+            LEFT JOIN questions q ON q.point_id = sp.id
+            GROUP BY sp.id
+            ORDER BY sp.sort_order, sp.id
+            """
+        ).fetchall()
+
+    def assign_points(self, mapping: dict[str, int]) -> int:
+        """按 point 文本把题对齐到考纲：{point 文本: 考纲知识点 id}。
+
+        只动还没映射过的题（`point_id IS NULL`），所以**重复跑不会覆盖已有结果**，
+        也不会把人工纠正过的映射冲掉。返回改了行数。
+        """
+        if not mapping:
+            return 0
+        with self.tx() as conn:
+            changed = 0
+            for text, point_id in mapping.items():
+                cur = conn.execute(
+                    "UPDATE questions SET point_id = ? WHERE point = ? AND point_id IS NULL",
+                    (point_id, text),
+                )
+                changed += int(cur.rowcount or 0)
+        return changed
 
     # ---------- 统计 ----------
 
