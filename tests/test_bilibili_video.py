@@ -169,7 +169,7 @@ class TestFetchSubtitle:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def get_subtitle(self, cid):
+            async def get_subtitle(self, cid):
                 return {"subtitles": []}
 
         monkeypatch.setattr("cstudy.bilibili.video.bili_video.Video", FakeVideo)
@@ -180,7 +180,7 @@ class TestFetchSubtitle:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def get_subtitle(self, cid):
+            async def get_subtitle(self, cid):
                 return {
                     "subtitles": [
                         {"lan": "en-US", "subtitle_url": "//example.com/en.json"},
@@ -208,7 +208,7 @@ class TestFetchSubtitle:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def get_subtitle(self, cid):
+            async def get_subtitle(self, cid):
                 return {"subtitles": [{"lan": "zh-CN", "subtitle_url": "https://e.com/zh.json"}]}
 
         body = [

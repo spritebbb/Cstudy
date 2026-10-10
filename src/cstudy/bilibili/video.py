@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass
@@ -16,6 +17,10 @@ from typing import Any, Callable, TypeVar
 import requests
 from bilibili_api import video as bili_video
 from bilibili_api.exceptions import ApiException, NetworkException, ResponseCodeException
+
+# 注意：curl_cffi 的异常**不是** requests 的子类（它挂在 OSError 下面），
+# 所以下面 _retry 里必须单独捕一次，否则 TLS 抖动会直接冒到界面上。
+from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from ..config import Config
 from ..logging_setup import get_logger
@@ -74,6 +79,17 @@ def parse_video_ref(text: str) -> tuple[str, int]:
     return bvid, page
 
 
+def _run_async(coro):
+    """把 bilibili_api 的协程跑完再返回结果。
+
+    库 17.x 的接口（get_info / get_subtitle 等）全是 async 的，但我们这一层
+    是同步的——界面把它丢在 QThread 里跑，没有事件循环。所以自己起一个跑完。
+    不这么做的话拿到的是协程对象，下一行 .get() 就会炸成
+    "'coroutine' object has no attribute 'get'"。
+    """
+    return asyncio.run(coro)
+
+
 def _retry(func: Callable[[], T], attempts: int, what: str) -> T:
     """给 B 站调用加一层重试，并把库抛的异常一律翻译成人话。
 
@@ -104,7 +120,7 @@ def _retry(func: Callable[[], T], attempts: int, what: str) -> T:
         except ApiException as exc:
             # 其他库异常：不重试，翻译了直接抛
             raise BilibiliError(f"{what}失败：{exc}") from exc
-        except requests.RequestException as exc:
+        except (requests.RequestException, CurlRequestException) as exc:
             last = exc
             if attempt < attempts:
                 wait = RETRY_BACKOFF_SECONDS * attempt
@@ -177,7 +193,9 @@ def fetch_video_info(
 ) -> VideoInfo:
     """拿视频标题、分 P、时长、CID。"""
     info = _retry(
-        lambda: bili_video.Video(bvid=bvid, credential=credential).get_info(),
+        lambda: _run_async(
+            bili_video.Video(bvid=bvid, credential=credential).get_info()
+        ),
         attempts=_retries_from(config),
         what="获取视频信息",
     )
@@ -262,7 +280,9 @@ def fetch_subtitle(
         return None
 
     payload = _retry(
-        lambda: bili_video.Video(bvid=info.bvid, credential=credential).get_subtitle(info.cid),
+        lambda: _run_async(
+            bili_video.Video(bvid=info.bvid, credential=credential).get_subtitle(info.cid)
+        ),
         attempts=_retries_from(config),
         what="查询字幕",
     )
