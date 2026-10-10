@@ -34,3 +34,6 @@ desktop.ini
 
 # ===== Claude Code 本机个人设置（每台机器不同，不进仓库）=====
 .claude/settings.local.json
+
+# ===== 备份文件 =====
+*.bak
