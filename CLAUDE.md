@@ -55,3 +55,37 @@
 考纲覆盖度统计、刷题界面、真题组卷、编程题 gcc 编译验证。
 
 **唯一未验证的环节**：B 站字幕抓取需要用户本人扫码登录，尚未实测过。
+
+---
+
+## 已完成：git 首次提交（2026-10-10）
+
+- 身份用 `git config --local` **只写进本仓库**，全局 git config 未被改动：
+  - `user.name  = spritebbb`
+  - `user.email = 91140834+spritebbb@users.noreply.github.com`
+    （GitHub 隐私邮箱格式；公开主页上既没有显示名也没有公开邮箱，所以用 `<用户ID>+<用户名>` 推导）
+- 提交 `de8d1a1` 第一版代码；提交 `9d0e83e` Claude Code 自动化配置。
+- `.claude/settings.local.json` 已加入 `.gitignore`（本机个人设置，不进仓库）。
+- 首次提交前已复查：`.env`、`data/`、`logs/` 均未纳入。
+
+---
+
+## 已装好的 Claude Code 自动化
+
+下面的东西**已经落地并实测过**，新会话不要重复安装：
+
+| 类型 | 位置 | 作用 |
+|---|---|---|
+| hook | `.claude/hooks/guard_sensitive.py` | 写 `.env`、或 `git add` 到 `.env`/`data/`/`logs/` 时拦下 |
+| hook | `.claude/hooks/run_tests.py` | 改 `src/cstudy/` 后自动跑 pytest，只有失败才输出 |
+| hook | `.claude/hooks/_selftest.py` | 守卫脚本的自测，改过 hook 后跑一遍 |
+| skill | `/排错` | 读日志说人话，定位卡在链路的哪一环 |
+| skill | `/自检` | 跑环境体检并逐项解释 |
+| subagent | `code-reviewer` | 按本项目约束复查改动 |
+| MCP | `context7` | 查 PyQt6 / openai / faster-whisper 等库的最新文档 |
+
+**写 hook 时的两个坑**（都踩过）：
+1. 本机**没有装 `jq`**——用项目自带 `.venv\Scripts\python.exe` 解析 stdin，别用 `jq`。
+2. 中文 Windows 上 Python 的 stdout 默认是 GBK，会输出乱码。脚本里必须
+   `sys.stdout.reconfigure(encoding="utf-8")`。
+
