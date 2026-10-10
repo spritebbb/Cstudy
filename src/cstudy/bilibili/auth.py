@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from pathlib import Path
 
 from bilibili_api import Credential, login_v2
@@ -19,6 +20,12 @@ from ..config import Config
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
+
+# B 站偶尔会在 TLS 握手阶段直接把连接掐掉（实测约 1/5 的概率），
+# 报错长这样：curl: (35) BoringSSL SSL_connect: Connection closed abruptly。
+# 这不是账号或配置问题，重试一下通常就好，所以所有 B 站调用都过这层重试。
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 2.0
 
 # 需要保存的登录凭据字段
 CREDENTIAL_FIELDS = (
@@ -81,12 +88,36 @@ class QrCodeSession:
     def _run(self, coro):
         return self._loop.run_until_complete(coro)
 
+    def _run_retrying(self, coro_factory, what: str):
+        """跑一个协程，失败自动重试。
+
+        coro_factory 是「调用后返回新协程」的可调用对象——每次重试都要新的协程，
+        不能复用同一个。
+        """
+        last: Exception | None = None
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                return self._run(coro_factory())
+            except Exception as exc:
+                last = exc
+                if attempt < RETRY_ATTEMPTS:
+                    wait = RETRY_BACKOFF_SECONDS * attempt
+                    log.warning(
+                        "%s 第 %d 次失败（%s），%.0f 秒后重试",
+                        what, attempt, type(exc).__name__, wait,
+                    )
+                    time.sleep(wait)
+
+        raise BilibiliAuthError(
+            f"{what}失败，连着试了 {RETRY_ATTEMPTS} 次都没成功。\n"
+            "这多半是网络不稳（B 站偶尔会直接掐断连接），不是你的账号问题。\n"
+            "检查一下网络，然后重新双击 扫码登录.bat 就行。\n"
+            f"（技术细节，看不懂可以发给我：{last}）"
+        ) from last
+
     def start(self) -> bytes:
         """生成二维码，返回 PNG 图片字节。"""
-        try:
-            self._run(self._qr.generate_qrcode())
-        except Exception as exc:  # 网络问题、接口变动都可能
-            raise BilibiliAuthError(f"获取登录二维码失败：{exc}") from exc
+        self._run_retrying(self._qr.generate_qrcode, "获取登录二维码")
         self._started = True
         return self._qr_image()
 
@@ -110,10 +141,7 @@ class QrCodeSession:
         if not self._started:
             raise BilibiliAuthError("还没生成二维码，先调用 start()")
         events = login_v2.QrCodeLoginEvents
-        try:
-            state = self._run(self._qr.check_state())
-        except Exception as exc:
-            raise BilibiliAuthError(f"查询扫码状态失败：{exc}") from exc
+        state = self._run_retrying(self._qr.check_state, "查询扫码状态")
 
         if state == events.DONE:
             return STATE_DONE
@@ -144,8 +172,6 @@ def login_and_save(
     on_qrcode 收到 PNG 字节，由调用方决定怎么展示（存文件、打印路径等）。
     on_state 收到状态文字，用于终端提示。
     """
-    import time
-
     session = QrCodeSession()
     try:
         png = session.start()
