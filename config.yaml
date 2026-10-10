@@ -1,0 +1,56 @@
+# 非敏感配置。密钥一律放 .env，不要写在这里。
+
+app:
+  name: C语言备考助手
+
+paths:
+  database: data/cstudy.db
+  notes: notes
+  logs: logs
+  cookies: data/cookies/bilibili.json
+  audio: data/audio
+
+ai:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  # deepseek-flash：100 万上下文，同时支持文字和图片输入
+  model: deepseek-flash
+  timeout_seconds: 180
+  max_retries: 3
+  retry_backoff_seconds: 5
+  temperature: 0.3
+  # 单次请求最多送多少字字幕，防止请求体过大
+  max_chars_per_chunk: 6000
+
+notes:
+  # 字幕按多少分钟切一块，逐块生成小结再合并
+  chunk_minutes: 10
+  # 少于这个字数就不切块，直接一次性生成
+  min_chunk_chars: 200
+
+quiz:
+  choice: 3
+  fill: 2
+  reading: 1
+  coding: 1
+
+transcribe:
+  # 没有 CC 字幕时，是否用本地 whisper 转写
+  enabled: true
+  # tiny / base / small / medium / large-v3，越大越准也越慢
+  model_size: small
+  # auto 会优先用显卡，装不上 CUDA 就自动退回 CPU
+  device: auto
+  # auto 会按 device 自动选择 cuda:float16 或 cpu:int8
+  compute_type: auto
+  language: zh
+
+bilibili:
+  request_timeout: 30
+  max_retries: 3
+
+logging:
+  level: INFO
+  file: logs/cstudy.log
+  max_bytes: 5242880
+  backup_count: 3

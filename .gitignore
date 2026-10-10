@@ -1,0 +1,33 @@
+# ===== 密钥，绝对不能进仓库 =====
+.env
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ===== 运行时数据（含个人登录态和答题记录，不进仓库）=====
+data/cstudy.db
+data/cookies/
+data/audio/
+data/frames/
+logs/
+
+# ===== 临时文件 =====
+*.tmp
+*.part
+
+# ===== 操作系统 =====
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ===== 编辑器 =====
+.vscode/
+.idea/
+
+# ===== Claude Code 本机个人设置（每台机器不同，不进仓库）=====
+.claude/settings.local.json
