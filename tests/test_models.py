@@ -241,3 +241,44 @@ class TestExamType:
         text = "以下程序运行后的输出结果是 ______ 。\nint main() { printf(\"hi\"); return 0; }"
 
         assert self.make(text).exam_type == "reading"
+
+
+class TestBlankMarkers:
+    """空的写法在真实材料里花样很多，认漏一种就有一批题被判错。
+
+    小绿书用 `【1】` `【2】` 编号空（225 道），有的卷子直接把"填空6"写进代码。
+    """
+
+    def make(self, text: str) -> Question:
+        return Question(type="fill", question=text, answer="1")
+
+    def test_numbered_square_bracket_blanks_are_recognised(self):
+        """小绿书就是这么标空的。"""
+        text = (
+            "#include <stdio.h>\nint main() {\n"
+            "    int a = 【1】, b = 【2】;\n"
+            '    printf("%d", a + b);\n}'
+        )
+
+        assert self.make(text).exam_type == "code_fill"
+
+    def test_the_word_fill_as_a_placeholder_is_recognised(self):
+        """有的卷子在代码里直接写"填空6""填空7"当占位符。"""
+        text = (
+            "以下程序的功能是：对数组冒泡排序。请填空：\n"
+            "#include <stdio.h>\nvoid sort( 填空6 )\n{\n  int i,j;\n  填空7\n  ...\n}"
+        )
+
+        assert self.make(text).exam_type == "code_fill"
+
+    def test_a_numbered_blank_in_prose_is_still_a_plain_fill(self):
+        """`【1】` 出现在纯文字题里，也得当成空算——只是没有代码，还是普通填空。"""
+        text = "C 语言的源程序必须通过【1】和【2】后，才能被计算机执行。"
+
+        assert self.make(text).exam_type == "fill"
+
+    def test_paper_numbering_is_not_a_blank(self):
+        """`【题 6.74】` 是题号，不是空。"""
+        text = "【题 6.74】下面程序的功能是输出方阵。请填空。\nint main() { ... }"
+
+        assert self.make(text).exam_type == "fill"
