@@ -139,6 +139,9 @@ def extract(path: Path, workdir: Path) -> str:
 # 渲染倍数：2.0 ≈ 144dpi。够看清试卷上的小字，图片又不会大到浪费 token。
 OCR_SCALE = 2.0
 
+# OCR 结果缓存。一份 329 页的书要识别半小时，中途挂了重跑不该再认一遍。
+OCR_CACHE = Path(__file__).resolve().parents[1] / "data" / "ocr_cache"
+
 
 def ocr_pdf(path: Path, client: DeepSeekClient, on_page=None) -> str:
     """把扫描版 PDF 逐页渲染成图，交给 AI 抄成文字。
@@ -146,6 +149,11 @@ def ocr_pdf(path: Path, client: DeepSeekClient, on_page=None) -> str:
     用 AI 而不是装 Tesseract/PaddleOCR：**不用新装任何东西**（pypdfium2 已经在用），
     而且它对代码和公式的识别比传统 OCR 好得多——试卷里全是代码。
     """
+    cache_file = OCR_CACHE / (re.sub(r"[^\w一-鿿]+", "_", path.stem) + ".txt")
+    if cache_file.exists():
+        print(f"    用上次 OCR 的结果（{cache_file.name}）")
+        return cache_file.read_text("utf-8")
+
     import pypdfium2 as pdfium
 
     document = pdfium.PdfDocument(str(path))
@@ -176,7 +184,11 @@ def ocr_pdf(path: Path, client: DeepSeekClient, on_page=None) -> str:
             temperature=0,
         )
         pages.append(text)
-    return "\n\n".join(pages)
+
+    result = "\n\n".join(pages)
+    OCR_CACHE.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(result, "utf-8")
+    return result
 
 
 # ---------- 收集文件 ----------

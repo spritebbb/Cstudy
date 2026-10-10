@@ -161,3 +161,21 @@ class TestIsAnswerKey:
         (tmp_path / "专升本C语言 试卷附答案六.pdf").write_bytes(b"x")
 
         assert not is_answer_key(tmp_path / "专升本C语言 试卷附答案六.pdf")
+
+
+class TestOcrCache:
+    """OCR 结果落盘缓存——一份 329 页的书要认半小时，中途挂了不该再认一遍。"""
+
+    def test_uses_cached_result_instead_of_calling_ai(self, tmp_path, monkeypatch):
+        import import_bank
+
+        monkeypatch.setattr(import_bank, "OCR_CACHE", tmp_path)
+        pdf = tmp_path / "密1.pdf"
+        pdf.write_bytes(b"x")
+        (tmp_path / "密1.txt").write_text("上次认出来的内容", encoding="utf-8")
+
+        class Boom:
+            def chat(self, *args, **kwargs):
+                raise AssertionError("有缓存就不该再调 AI")
+
+        assert import_bank.ocr_pdf(pdf, Boom()) == "上次认出来的内容"
