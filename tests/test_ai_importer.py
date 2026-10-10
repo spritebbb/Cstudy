@@ -315,3 +315,13 @@ class TestSplitAnswers:
 
         prompts_sent = [call[-1]["content"] for call in client.calls]
         assert all("参考答案" in p for p in prompts_sent)
+
+    def test_heading_with_a_part_prefix(self):
+        """"第2部分 参考答案"这种也认——习题书常这么排（小绿书就是这么排的）。"""
+        text = "1. 甲\n" + "x" * 400 + "\n第2部分  参考答案\n【题 1.1】A\n"
+
+        body, answers = split_answers(text)
+
+        assert answers, "带「第2部分」前缀的答案标题没认出来"
+        assert "【题 1.1】A" in answers
+        assert "第2部分" not in body
