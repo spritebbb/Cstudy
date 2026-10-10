@@ -64,7 +64,20 @@ class Database:
         sql = SCHEMA_FILE.read_text(encoding="utf-8")
         with self.tx() as conn:
             conn.executescript(sql)
+            self._migrate(conn)
         log.info("数据库结构已就绪：%s", self.path)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """给老库补上后来新加的列。
+
+        `CREATE TABLE IF NOT EXISTS` 不会改动已存在的表，所以新加的列必须在这里补，
+        否则老用户升级后一 INSERT 就报 "no such column"。
+        """
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(questions)")}
+        if "point" not in columns:
+            conn.execute("ALTER TABLE questions ADD COLUMN point TEXT")
+            log.info("已给 questions 表补上 point 列")
 
     # ---------- 视频 ----------
 
@@ -163,8 +176,9 @@ class Database:
                 cur = conn.execute(
                     """
                     INSERT INTO questions
-                        (type, difficulty, note_id, question, options, answer, explanation, source)
-                    VALUES (:type, :difficulty, :note_id, :question, :options,
+                        (type, difficulty, point, note_id, question, options,
+                         answer, explanation, source)
+                    VALUES (:type, :difficulty, :point, :note_id, :question, :options,
                             :answer, :explanation, :source)
                     """,
                     {**row, "note_id": note_id, "source": source},
@@ -180,6 +194,56 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM questions WHERE note_id = ? ORDER BY id", (note_id,)
         ).fetchall()
+
+    # ---------- 答题记录 ----------
+
+    def record_answer(
+        self,
+        question_id: int,
+        user_answer: str,
+        is_correct: bool,
+        time_spent: int | None = None,
+    ) -> None:
+        """记一次作答。判错时顺带往错题本记一笔（错次数 +1）。
+
+        **判对时不动错题本**：删记录会丢掉"我以前错过这道题"这个信息，
+        而错题本的价值恰恰在这里。什么时候算"掌握"、隔多久复习，
+        留给专门的错题本功能去定——这里只做累积，不做删除。
+        """
+        if not question_id:
+            # 题目没入库（理论上不该发生）就只当次练习，不写库
+            log.warning("这道题没有 id，本次作答不写库")
+            return
+
+        with self.tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO answers (question_id, user_answer, is_correct, time_spent)
+                VALUES (?, ?, ?, ?)
+                """,
+                (question_id, user_answer, 1 if is_correct else 0, time_spent),
+            )
+            if not is_correct:
+                conn.execute(
+                    """
+                    INSERT INTO wrong_questions
+                        (question_id, wrong_count, last_wrong_at, mastered)
+                    VALUES (?, 1, CURRENT_TIMESTAMP, 0)
+                    ON CONFLICT (question_id) DO UPDATE SET
+                        wrong_count   = wrong_questions.wrong_count + 1,
+                        last_wrong_at = CURRENT_TIMESTAMP,
+                        mastered      = 0
+                    """,
+                    (question_id,),
+                )
+
+    def list_wrong_question_ids(self) -> list[int]:
+        """还没掌握的错题 id，最近错的排前面。"""
+        rows = self.conn.execute(
+            "SELECT question_id FROM wrong_questions WHERE mastered = 0 "
+            "ORDER BY last_wrong_at DESC, question_id"
+        ).fetchall()
+        return [int(row["question_id"]) for row in rows]
 
     # ---------- 考纲 ----------
 

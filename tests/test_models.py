@@ -109,3 +109,61 @@ class TestParseQuestions:
     def test_non_list_raises(self):
         with pytest.raises(DataError, match="应该是一个列表"):
             parse_questions({"questions": "不是列表"})
+
+
+class TestQuestionFromRow:
+    """从数据库的一行还原题目。options 存的是 JSON 字符串，这里要解回来。"""
+
+    @staticmethod
+    def _row(**overrides) -> dict:
+        base = {
+            "type": "choice",
+            "difficulty": "easy",
+            "point": "字符与 ASCII",
+            "question": "选哪个",
+            "options": '["A. 甲", "B. 乙"]',
+            "answer": "A",
+            "explanation": "因为甲",
+        }
+        return {**base, **overrides}
+
+    def test_roundtrips_through_to_row(self):
+        original = Question(
+            type="choice",
+            question="选哪个",
+            answer="A",
+            options=["A. 甲", "B. 乙"],
+            explanation="因为甲",
+            difficulty="hard",
+            point="指针",
+        )
+        assert Question.from_row(original.to_row()) == original
+
+    def test_parses_options_json(self):
+        assert Question.from_row(self._row()).options == ["A. 甲", "B. 乙"]
+
+    def test_broken_options_json_degrades_to_fill(self):
+        """库里一条坏数据不该让整个界面崩掉。
+
+        选项没了自动判分就不可能，退化成填空题——至少还能对着参考答案自己看。
+        """
+        question = Question.from_row(self._row(options="{不是 JSON"))
+        assert question.options == []
+        assert question.type == "fill"
+
+    def test_choice_with_too_few_options_degrades_to_fill(self):
+        question = Question.from_row(self._row(options='["只有一个"]'))
+        assert question.type == "fill"
+
+    def test_null_options_becomes_empty(self):
+        row = self._row(options=None, type="fill")
+        assert Question.from_row(row).options == []
+
+    def test_missing_columns_fall_back_to_defaults(self):
+        question = Question.from_row({"type": "fill", "question": "甲", "answer": "1"})
+        assert question.difficulty == "medium"
+        assert question.point == ""
+        assert question.options == []
+
+    def test_type_is_lowercased(self):
+        assert Question.from_row(self._row(type="CHOICE")).type == "choice"

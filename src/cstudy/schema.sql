@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS questions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     type        TEXT NOT NULL CHECK (type IN ('choice', 'fill', 'reading', 'coding')),
     difficulty  TEXT CHECK (difficulty IN ('easy', 'medium', 'hard')),
-    point_id    INTEGER,                         -- 对应知识点
+    point       TEXT,                            -- 知识点名称（AI 给的文字标签）
+    point_id    INTEGER,                         -- 对应考纲知识点（暂时没用上，恒为 NULL）
     note_id     INTEGER,                         -- 来自哪份笔记
     question    TEXT NOT NULL,
     options     TEXT,                            -- 选择题选项，JSON 数组

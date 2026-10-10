@@ -33,6 +33,7 @@ from ..logging_setup import get_logger
 from ..models import Question, ReviewReport
 from ..pipeline import LoadedVideo, NoteResult, QuizResult, StudyPipeline
 from .login_dialog import LoginDialog
+from .quiz_panel import QuizPanel
 from .workers import TaskWorker
 
 log = get_logger(__name__)
@@ -111,9 +112,11 @@ class MainWindow(QMainWindow):
         self.note_view.setOpenExternalLinks(True)
         self.tabs.addTab(self.note_view, "笔记")
 
-        self.quiz_view = QTextBrowser()
-        self.quiz_view.setOpenExternalLinks(True)
-        self.tabs.addTab(self.quiz_view, "题目")
+        # 答题区。判分和展示都在 QuizPanel 里，主窗口只负责把题喂给它。
+        self.quiz_panel = QuizPanel(self.db)
+        self.quiz_panel.status_changed.connect(self._set_status)
+        self.quiz_panel.load_all_requested.connect(self.on_load_all_questions)
+        self.tabs.addTab(self.quiz_panel, "答题")
 
         root.addWidget(self.tabs, stretch=1)
 
@@ -203,14 +206,20 @@ class MainWindow(QMainWindow):
 
     def _on_notes_done(self, note: NoteResult) -> None:
         self._note = note
-        body = note.body
-        # 复查动了什么要让人看得见，不然用户不知道 AI 背着他改了什么
-        if note.review.describe():
-            body = f"{body}\n\n---\n\n{note.review.describe()}\n"
-        self.note_view.setMarkdown(body)
+        self.note_view.setMarkdown(note.body)
         self.tabs.setCurrentWidget(self.note_view)
         self._set_status(f"笔记已生成：{note.path.name}")
+        self._log_review(note.review)
         self._refresh_buttons()
+
+    def _log_review(self, report: ReviewReport) -> None:
+        """把复查报告写进进度区。
+
+        用户要看得见 AI 背着他改了什么——不然复查就成了个黑箱。
+        """
+        text = report.describe()
+        if text:
+            self._log(text)
 
     def on_make_quiz(self) -> None:
         if not self._note or not self._video:
@@ -226,10 +235,40 @@ class MainWindow(QMainWindow):
         )
 
     def _on_quiz_done(self, result: QuizResult) -> None:
-        self.quiz_view.setMarkdown(_render_questions(result.questions, result.review))
-        self.tabs.setCurrentWidget(self.quiz_view)
+        self.quiz_panel.load(result.questions, result.question_ids)
+        self.tabs.setCurrentWidget(self.quiz_panel)
         self._set_status(f"已生成 {result.summary}")
+        self._log_review(result.review)
         self._refresh_buttons()
+
+    def on_load_all_questions(self) -> None:
+        """从题库里把所有题目捞出来刷——关掉软件重开之后也能接着刷。"""
+        try:
+            rows = self.db.list_questions()
+        except Exception:
+            log.exception("从题库读题目失败")
+            QMessageBox.warning(
+                self, "读不出来", "从题库读题目时出了点问题，详细原因在 logs/cstudy.log。"
+            )
+            return
+
+        questions: list[Question] = []
+        question_ids: list[int] = []
+        for row in rows:
+            try:
+                questions.append(Question.from_row(row))
+                question_ids.append(int(row["id"]))
+            except Exception:
+                # 一条坏数据不该让整批题都加载不了
+                log.warning("跳过一条读不出来的题目：id=%s", row["id"], exc_info=True)
+
+        if not questions:
+            self._set_status("题库里还没有题目，先导入视频生成一批吧。")
+            return
+
+        self.quiz_panel.load(questions, question_ids)
+        self.tabs.setCurrentWidget(self.quiz_panel)
+        self._set_status(f"从题库加载了 {len(questions)} 道题")
 
     # ---------- 辅助操作 ----------
 
@@ -264,37 +303,3 @@ class MainWindow(QMainWindow):
                 self._worker.wait(2000)
         self.db.close()
         super().closeEvent(event)
-
-
-def _render_questions(
-    questions: list[Question], review: ReviewReport | None = None
-) -> str:
-    """把题目渲染成 Markdown 预览。复查动过什么，写在最前面。"""
-    notice = review.describe() if review is not None else ""
-    if not questions and not notice:
-        return "_没有题目_"
-
-    parts: list[str] = [f"# 本次共 {len(questions)} 道题", ""]
-    if notice:
-        parts.append(notice)
-        parts.append("")
-
-    for index, q in enumerate(questions, start=1):
-        parts.append(f"## {index}. {q.type_label}（{q.difficulty}）")
-        if q.point:
-            parts.append(f"**知识点**：{q.point}")
-        parts.append("")
-        parts.append(q.question)
-        parts.append("")
-        for option in q.options:
-            parts.append(f"- {option}")
-        if q.options:
-            parts.append("")
-        parts.append(f"**答案**：{q.answer}")
-        if q.explanation:
-            parts.append("")
-            parts.append(f"**解析**：{q.explanation}")
-        parts.append("")
-        parts.append("---")
-        parts.append("")
-    return "\n".join(parts)

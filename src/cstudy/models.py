@@ -10,6 +10,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
+
 VALID_TYPES = ("choice", "fill", "reading", "coding")
 VALID_DIFFICULTY = ("easy", "medium", "hard")
 
@@ -57,11 +61,52 @@ class Question:
         return {
             "type": self.type,
             "difficulty": self.difficulty,
+            "point": self.point,
             "question": self.question,
             "options": json.dumps(self.options, ensure_ascii=False) if self.options else None,
             "answer": self.answer,
             "explanation": self.explanation,
         }
+
+    @classmethod
+    def from_row(cls, row) -> "Question":
+        """从数据库的一行还原成 Question。
+
+        options 列存的是 JSON 字符串，这里解析回来。解析失败就当作没有选项——
+        库里的一条坏数据不该让整个界面崩掉。
+        """
+        options: list[str] = []
+        raw_options = row["options"] if "options" in row.keys() else None
+        if raw_options:
+            try:
+                loaded = json.loads(raw_options)
+            except (TypeError, ValueError):
+                log.warning("题目选项解析失败，当作没有选项：%.80s", raw_options)
+            else:
+                if isinstance(loaded, list):
+                    options = [str(item) for item in loaded]
+
+        def field(name: str, default: str = "") -> str:
+            if name not in row.keys():
+                return default
+            return str(row[name] or default).strip()
+
+        qtype = field("type").lower()
+        if qtype == "choice" and len(options) < 2:
+            # 选项没存下来或者坏了，自动判分已经不可能。退化成填空题，
+            # 至少还能让用户对着参考答案自己看——总比整个界面崩掉强。
+            log.warning("选择题的选项不可用，退化成填空题：%.40s", field("question"))
+            qtype = "fill"
+
+        return cls(
+            type=qtype,
+            question=field("question"),
+            answer=field("answer"),
+            explanation=field("explanation"),
+            options=options,
+            difficulty=field("difficulty", "medium").lower() or "medium",
+            point=field("point"),
+        )
 
 
 def parse_json_object(payload: str | dict) -> dict:
@@ -169,14 +214,17 @@ class ReviewReport:
         return bool(self.removed or self.fixed)
 
     def describe(self) -> str:
-        """写成给用户看的中文说明。没有改动时返回空字符串。"""
+        """写成给用户看的中文说明。没有改动时返回空字符串。
+
+        返回**纯文本**——它直接进界面的进度区（QPlainTextEdit），用 Markdown 记号会露出来。
+        """
         if not self.ok:
-            return f"**复查没成功**（{self.error}），这次的内容没有经过二次把关。"
+            return f"复查没成功（{self.error}），这次的内容没有经过二次把关。"
         if not self.changed:
             return ""
-        lines = ["**复查做了这些调整：**"]
-        lines += [f"- 改了 {note.describe()}" for note in self.fixed]
-        lines += [f"- 删了 {note.describe()}" for note in self.removed]
+        lines = ["复查做了这些调整："]
+        lines += [f"  · 改了 {note.describe()}" for note in self.fixed]
+        lines += [f"  · 删了 {note.describe()}" for note in self.removed]
         return "\n".join(lines)
 
 

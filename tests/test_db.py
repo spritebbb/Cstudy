@@ -153,3 +153,69 @@ class TestStats:
         stats = db.stats()
         assert set(stats) == {"视频", "字幕", "笔记", "题目", "考纲知识点"}
         assert all(v == 0 for v in stats.values())
+
+
+class TestAnswerRecording:
+    def _one_question(self, db: Database) -> int:
+        return db.save_questions(
+            [Question(type="choice", question="选哪个", answer="A", options=["A. 甲", "B. 乙"])]
+        )[0]
+
+    def test_records_the_answer_row(self, db: Database):
+        question_id = self._one_question(db)
+        db.record_answer(question_id, "A", is_correct=True, time_spent=12)
+
+        assert db.count("answers") == 1
+        row = db.conn.execute("SELECT * FROM answers").fetchone()
+        assert row["question_id"] == question_id
+        assert row["user_answer"] == "A"
+        assert row["is_correct"] == 1
+        assert row["time_spent"] == 12
+
+    def test_wrong_answer_enters_the_wrong_book(self, db: Database):
+        question_id = self._one_question(db)
+        db.record_answer(question_id, "B", is_correct=False)
+
+        assert db.count("wrong_questions") == 1
+        assert db.list_wrong_question_ids() == [question_id]
+
+    def test_repeated_wrong_answers_increment_the_count(self, db: Database):
+        question_id = self._one_question(db)
+        db.record_answer(question_id, "B", is_correct=False)
+        db.record_answer(question_id, "C", is_correct=False)
+
+        row = db.conn.execute("SELECT wrong_count FROM wrong_questions").fetchone()
+        assert row["wrong_count"] == 2
+
+    def test_correct_answer_does_not_touch_the_wrong_book(self, db: Database):
+        """答对了也不删记录。
+
+        删了就丢了"我以前错过这道题"这个信息，而错题本的价值恰恰在这里。
+        什么时候算掌握、隔多久复习，留给专门的错题本功能去定。
+        """
+        question_id = self._one_question(db)
+        db.record_answer(question_id, "B", is_correct=False)
+        db.record_answer(question_id, "A", is_correct=True)
+
+        assert db.count("wrong_questions") == 1            # 记录还在
+        assert db.list_wrong_question_ids() == [question_id]  # 仍然算错题
+        assert db.count("answers") == 2                    # 两次作答都记了
+
+    def test_missing_question_id_is_skipped(self, db: Database):
+        """题目没入库时只当次练习，不写库，更不能崩。"""
+        db.record_answer(0, "A", is_correct=True)
+        assert db.count("answers") == 0
+
+    def test_point_label_survives_roundtrip(self, db: Database):
+        db.save_questions(
+            [
+                Question(
+                    type="choice",
+                    question="选哪个",
+                    answer="A",
+                    options=["A. 甲", "B. 乙"],
+                    point="字符与 ASCII",
+                )
+            ]
+        )
+        assert db.list_questions()[0]["point"] == "字符与 ASCII"
