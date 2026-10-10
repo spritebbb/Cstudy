@@ -57,6 +57,12 @@ review:
   # 复查笔记时，送给 AI 的原始字幕最多多少字
   max_source_chars: 40000
 
+# 导入现成题库（粘贴文字那份）。
+# 粘贴的文字按题号切成几段分别解析——切太大会超出单次返回的长度，
+# 切太小又浪费调用次数。8000 字大约 20~30 道题。
+import:
+  max_chars_per_call: 8000
+
 transcribe:
   # 没有 CC 字幕时，是否用本地 whisper 转写
   enabled: true

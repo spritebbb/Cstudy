@@ -32,6 +32,7 @@ from ..db import Database
 from ..logging_setup import get_logger
 from ..models import Question, ReviewReport
 from ..pipeline import LoadedVideo, NoteResult, QuizResult, StudyPipeline
+from .import_dialog import ImportDialog
 from .login_dialog import LoginDialog
 from .quiz_panel import QuizPanel
 from .workers import TaskWorker
@@ -93,6 +94,10 @@ class MainWindow(QMainWindow):
         self.login_button = QPushButton("B 站扫码登录")
         self.login_button.clicked.connect(self.on_login)
         action_row.addWidget(self.login_button)
+
+        self.import_bank_button = QPushButton("导入题库")
+        self.import_bank_button.clicked.connect(self.on_import_bank)
+        action_row.addWidget(self.import_bank_button)
 
         action_row.addStretch(1)
 
@@ -277,6 +282,18 @@ class MainWindow(QMainWindow):
         dialog.exec()
         if self._note is None:
             self._set_status("登录窗口已关闭")
+
+    def on_import_bank(self) -> None:
+        """导入现成题库：粘贴一段题目文字，AI 整理后入库。"""
+        dialog = ImportDialog(self.config, self.db, self.pipeline.client, self)
+        dialog.saved.connect(self._on_bank_imported)
+        dialog.exec()
+
+    def _on_bank_imported(self, count: int) -> None:
+        self._set_status(f"题库新增 {count} 道题")
+        self._update_stats()
+        # 顺手加载进答题区，省得用户再点一次
+        self.on_load_all_questions()
 
     def on_open_notes(self) -> None:
         notes_dir = self.config.path("notes")
