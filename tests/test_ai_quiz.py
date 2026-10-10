@@ -123,3 +123,19 @@ class TestQuizUserPrompt:
         text = prompts.quiz_user_prompt("笔记", plan)
         assert "期望数量" in text
         assert "选择题 3 道" in text
+
+
+class TestPromptRules:
+    """提示词就是这个项目的"代码"，关键规则掉了要能立刻发现。"""
+
+    def test_duplicate_questions_are_forbidden_in_both_places(self):
+        """实测踩过：同一个知识点被问了两遍（两道题都在问"C 语言之父是谁"）。
+
+        出题和复查两处都要明确禁止，光靠模型自觉不行。
+        """
+        assert "重复" in prompts.QUIZ_SYSTEM
+        assert "重复" in prompts.QUIZ_REVIEW_SYSTEM
+
+    def test_review_allows_deleting_everything(self):
+        """全是废题时删光是正确结果，提示词必须说清楚。"""
+        assert "删光" in prompts.QUIZ_REVIEW_SYSTEM
