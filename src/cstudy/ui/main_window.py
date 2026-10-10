@@ -40,6 +40,7 @@ from .login_dialog import LoginDialog
 from .quiz_panel import QuizPanel
 from .syllabus_panel import SyllabusPanel
 from .workers import TaskWorker, friendly_error
+from .wrong_book_panel import WrongBookPanel
 
 log = get_logger(__name__)
 
@@ -134,6 +135,14 @@ class MainWindow(QMainWindow):
         # 考纲覆盖度：哪些知识点还没题。导入新题后要 refresh 一次。
         self.syllabus_panel = SyllabusPanel(self.db)
         self.tabs.addTab(self.syllabus_panel, "考纲")
+
+        # 错题本：错过的题 + 今天该复习哪几道。
+        self.wrong_book_panel = WrongBookPanel(self.db, self.config)
+        self.wrong_book_panel.review_requested.connect(self._on_review_wrong)
+        self.tabs.addTab(self.wrong_book_panel, "错题本")
+
+        # 切到某个 tab 时顺手刷新它——省得用户看到过期数据
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         root.addWidget(self.tabs, stretch=1)
 
@@ -327,6 +336,20 @@ class MainWindow(QMainWindow):
             except Exception:
                 log.warning("跳过一条读不出来的题目：id=%s", row["id"], exc_info=True)
         return questions, question_ids
+
+    def _on_review_wrong(self, questions: list[Question], question_ids: list[int]) -> None:
+        """错题本里点「复习今天该复习的」——直接进答题区。"""
+        self.quiz_panel.load(questions, question_ids)
+        self.tabs.setCurrentWidget(self.quiz_panel)
+        self._set_status(f"从错题本拿了 {len(questions)} 道题来复习")
+
+    def _on_tab_changed(self, index: int) -> None:
+        """切到某个 tab 时刷新它——错题本和考纲都会随做题/导入变化。"""
+        widget = self.tabs.widget(index)
+        if widget is self.wrong_book_panel:
+            self.wrong_book_panel.refresh()
+        elif widget is self.syllabus_panel:
+            self.syllabus_panel.refresh()
 
     # ---------- 辅助操作 ----------
 

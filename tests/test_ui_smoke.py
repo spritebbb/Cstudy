@@ -18,12 +18,15 @@ import pytest  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from PyQt6.QtCore import QUrl  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
+from cstudy.config import Config  # noqa: E402
 from cstudy.db import Database  # noqa: E402
 from cstudy.models import Question  # noqa: E402
 from cstudy.ui.filter_dialog import FilterDialog  # noqa: E402
 from cstudy.ui.syllabus_panel import SyllabusPanel  # noqa: E402
+from cstudy.ui.wrong_book_panel import WrongBookPanel  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -136,3 +139,54 @@ class TestSyllabusPanel:
         panel.refresh()
 
         assert "1 个还没有题" in panel.summary_label.text()
+
+
+class TestWrongBookPanel:
+    def test_constructs_with_an_empty_book(self, qapp, db: Database):
+        panel = WrongBookPanel(db, Config({"wrong_book": {}, "paths": {}}, Path(".")))
+
+        assert "空的" in panel.summary_label.text()
+        assert not panel.review_button.isEnabled()
+
+    def test_lists_a_question_that_was_answered_wrong(self, qapp, db: Database):
+        question_id = db.save_questions(
+            [Question(type="fill", question="错过的题", answer="1")]
+        )[0]
+        db.record_answer(question_id, "0", is_correct=False)
+
+        panel = WrongBookPanel(db, Config({"wrong_book": {}, "paths": {}}, Path(".")))
+
+        assert "1 道" in panel.summary_label.text()
+        assert "错过的题" in panel.browser.toPlainText()
+
+    def test_review_button_only_enables_when_something_is_due(self, qapp, db: Database):
+        """刚错完不该能点"复习"——今天还没到复习时间。"""
+        question_id = db.save_questions([Question(type="fill", question="甲", answer="1")])[0]
+        db.record_answer(question_id, "0", is_correct=False)
+
+        panel = WrongBookPanel(db, Config({"wrong_book": {}, "paths": {}}, Path(".")))
+
+        assert not panel.review_button.isEnabled()
+
+    def test_question_text_with_html_is_escaped(self, qapp, db: Database):
+        """题干里有 `#include <stdio.h>`，不转义会被当成 HTML 标签吃掉。"""
+        question_id = db.save_questions(
+            [Question(type="fill", question="#include <stdio.h> 输出什么", answer="1")]
+        )[0]
+        db.record_answer(question_id, "0", is_correct=False)
+
+        panel = WrongBookPanel(db, Config({"wrong_book": {}, "paths": {}}, Path(".")))
+
+        assert "<stdio.h>" in panel.browser.toPlainText()
+
+    def test_removing_a_question_takes_it_out_of_the_list(self, qapp, db: Database):
+        question_id = db.save_questions([Question(type="fill", question="甲", answer="1")])[0]
+        db.record_answer(question_id, "0", is_correct=False)
+        panel = WrongBookPanel(db, Config({"wrong_book": {}, "paths": {}}, Path(".")))
+
+        panel._on_anchor(QUrl("remove:{}".format(question_id)))
+
+        # "还欠着"没了，说明不再当欠账算——但题目还留在"已掌握"里归档
+        assert "还欠着" not in panel.summary_label.text()
+        assert "清空了" in panel.summary_label.text()
+        assert "甲" in panel.browser.toPlainText()

@@ -286,6 +286,18 @@ class Database:
         ).fetchall()
         return [int(row["question_id"]) for row in rows]
 
+    def set_mastered(self, question_id: int, mastered: bool = True) -> None:
+        """手动把一道题移出错题本（或移回来）。
+
+        "连续答对几次算掌握"是**算出来**的，不写库——只有用户手动点了
+        "这个我会了"才动这一列。
+        """
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE wrong_questions SET mastered = ? WHERE question_id = ?",
+                (1 if mastered else 0, question_id),
+            )
+
     # ---------- 考纲 ----------
 
     def upsert_syllabus_point(self, name: str, chapter: str = "", sort_order: int = 0) -> int:
