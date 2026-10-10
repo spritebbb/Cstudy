@@ -32,6 +32,7 @@
 | 跑测试 | `.venv\Scripts\python.exe -m pytest` |
 | 单独验证 AI 链路 | `.venv\Scripts\python.exe scripts\test_ai.py` |
 | 单独验证 B 站链路 | `.venv\Scripts\python.exe scripts\test_bilibili.py "BV号"` |
+| 批量导入题库文件 | `.venv\Scripts\python.exe scripts\import_bank.py "文件夹" --dry-run` |
 
 ---
 
