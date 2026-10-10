@@ -78,6 +78,55 @@ def load_credential(path: Path) -> Credential | None:
     return credential
 
 
+# 写进 cookie 文件时的名字。**大小写必须对**——B 站认的是 SESSDATA，不是 sessdata。
+COOKIE_NAMES = {
+    "sessdata": "SESSDATA",
+    "bili_jct": "bili_jct",
+    "buvid3": "buvid3",
+    "buvid4": "buvid4",
+    "dedeuserid": "DedeUserID",
+}
+
+# 十年后过期。格式要求填个时间戳，填 0 会被 yt-dlp 当成"会话 cookie"丢掉。
+COOKIE_EXPIRY = "2147483647"
+
+
+def yt_dlp_cookie_file(config: Config) -> Path | None:
+    """把登录态写成 yt-dlp 认识的 Netscape cookie 文件，返回路径；没登录返回 None。
+
+    **下载也必须带登录态**：B 站对匿名下载限速——实测同一份视频，匿名只有
+    42 KB/s，慢十倍；而且不带 cookie 往往只能拿到最低清晰度。
+    文件写在 data/cookies/ 里（已 gitignore，里面是凭据，不能进仓库）。
+    """
+    credential = load_credential(credential_path(config))
+    if credential is None:
+        return None
+
+    lines = ["# Netscape HTTP Cookie File", "# Cstudy 自动生成，别手动改"]
+    for name in CREDENTIAL_FIELDS:
+        value = getattr(credential, name, "") or ""
+        cookie = COOKIE_NAMES.get(name)
+        if not value or not cookie:
+            continue
+        lines.append(
+            "\t".join([".bilibili.com", "TRUE", "/", "FALSE", COOKIE_EXPIRY, cookie, value])
+        )
+
+    if len(lines) <= 2:
+        log.warning("登录态里没凑出可用的 cookie，这次匿名下载")
+        return None
+
+    path = credential_path(config).with_name("yt-dlp-cookies.txt")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("写 cookie 文件失败（%s），这次匿名下载", exc)
+        return None
+    log.info("已准备 yt-dlp 用的 cookie 文件（登录态下载，不受匿名限速）")
+    return path
+
+
 class QrCodeSession:
     """一次扫码登录会话。同一个线程里创建、使用、关闭。"""
 

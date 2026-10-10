@@ -161,3 +161,64 @@ class TestCredentialFromSessionCookies:
         credential = session.credential()
         assert credential.sessdata == "s" * 222
         assert credential.ac_time_value in (None, "")
+
+
+class TestYtDlpCookieFile:
+    """把登录态转成 yt-dlp 认识的 cookie 文件。
+
+    yt-dlp 用的是 Netscape 格式，而项目里的登录态是 bilibili-api 的 JSON，
+    两边格式不一样，得转换——**而且 cookie 名的大小写必须对**
+    （B 站认 `SESSDATA`，不认 `sessdata`）。
+    """
+
+    @pytest.fixture
+    def config(self, tmp_path: Path):
+        from cstudy.config import Config
+
+        return Config({"paths": {"cookies": str(tmp_path / "cookies" / "bilibili.json")}}, tmp_path)
+
+    def write_login(self, config, **overrides):
+        import json
+
+        path = auth_module.credential_path(config)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "sessdata": "假的-sessdata-值",
+            "bili_jct": "假的-jct",
+            "dedeuserid": "12345",
+            "buvid3": "",
+            "buvid4": "",
+            "ac_time_value": "",
+        }
+        data.update(overrides)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_returns_none_when_not_logged_in(self, config):
+        assert auth_module.yt_dlp_cookie_file(config) is None
+
+    def test_writes_a_netscape_cookie_file(self, config):
+        self.write_login(config)
+
+        path = auth_module.yt_dlp_cookie_file(config)
+
+        assert path is not None and path.exists()
+        lines = [l for l in path.read_text(encoding="utf-8").splitlines() if not l.startswith("#")]
+        # Netscape 格式每行必须是 7 个 tab 分隔的字段
+        assert all(len(line.split("\t")) == 7 for line in lines)
+        names = [line.split("\t")[5] for line in lines]
+        assert "SESSDATA" in names, "大小写不对 B 站不认"
+        assert "bili_jct" in names
+        assert "DedeUserID" in names
+
+    def test_empty_fields_are_skipped(self, config):
+        self.write_login(config)
+
+        path = auth_module.yt_dlp_cookie_file(config)
+
+        names = [l.split("\t")[5] for l in path.read_text(encoding="utf-8").splitlines() if not l.startswith("#")]
+        assert "buvid3" not in names, "空值的 cookie 不该写进去"
+
+    def test_returns_none_when_credentials_are_unusable(self, config):
+        self.write_login(config, sessdata="")
+
+        assert auth_module.yt_dlp_cookie_file(config) is None

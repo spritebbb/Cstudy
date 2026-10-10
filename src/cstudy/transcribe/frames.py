@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from ..bilibili.auth import yt_dlp_cookie_file
 from ..config import Config
 from ..logging_setup import get_logger
 from ..tools import ffmpeg_dir, find_yt_dlp
@@ -33,6 +35,15 @@ DEFAULT_MAX_HEIGHT = 480
 
 # ffmpeg 的 showinfo 每个抽中的帧打一行，里面有 pts_time:12.34
 PTS_TIME = re.compile(r"pts_time:([\d.]+)")
+
+# yt-dlp 的下载进度行，例如 "[download]  45.0% of 10.82MiB at 1.2MiB/s ETA 00:03"
+DOWNLOAD_PERCENT = re.compile(r"\[download\]\s+([\d.]+)%")
+
+# 下载最多等这么久。超时多半是 B 站给了个很慢的节点，重试一次通常就好。
+DOWNLOAD_TIMEOUT_SECONDS = 1800
+
+# 进度每涨这么多就报一次——太密了刷屏，太疏了看着像卡住
+PROGRESS_STEP = 5.0
 
 
 class FrameError(RuntimeError):
@@ -70,6 +81,48 @@ def _setting(config: Config, key: str, default, cast):
         return default
 
 
+def _run_download(command: list[str], on_progress: ProgressCallback | None):
+    """跑 yt-dlp，**一边跑一边把下载进度报给界面**。
+
+    必须报进度：整集下载可能要几分钟——B 站给的 CDN 节点时快时慢，同一份
+    10.82 MB 的文件，实测从 **4 秒到 4 分半**都遇到过（差了上百倍）。
+    界面上一直没动静，用户会以为卡死了（真收到过"真的有在下吗"这个反馈）。
+    """
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # 合并起来，进度和报错都能读到
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except OSError as exc:
+        raise FrameError(f"启动 yt-dlp 失败：{exc}") from exc
+
+    lines: list[str] = []
+    deadline = time.monotonic() + DOWNLOAD_TIMEOUT_SECONDS
+    reported = -PROGRESS_STEP
+    assert process.stdout is not None
+    for line in process.stdout:
+        lines.append(line.rstrip())
+        match = DOWNLOAD_PERCENT.search(line)
+        if match and on_progress:
+            percent = float(match.group(1))
+            if percent - reported >= PROGRESS_STEP:
+                reported = percent
+                on_progress(f"正在下载视频… {percent:.0f}%")
+        if time.monotonic() > deadline:
+            process.kill()
+            raise FrameError(
+                f"下载视频超过 {DOWNLOAD_TIMEOUT_SECONDS // 60} 分钟还没下完，已经停下。\n"
+                "多半是 B 站这次分了个很慢的节点，重新导入一次通常就好。"
+            )
+    process.wait()
+    return subprocess.CompletedProcess(command, process.returncode, "\n".join(lines), "")
+
+
 def download_video(
     url: str,
     out_dir: Path,
@@ -100,25 +153,28 @@ def download_video(
         "--output", str(out_dir / "%(id)s.%(ext)s"),
         "--no-warnings",
         "--no-part",
-        url,
+        # 进度行要能被逐行读到，不然界面上看不到百分比
+        "--newline",
+        # B 站的视频是分片传的，**多开几个连接并排下**：单连接被限速时能快不少
+        "--concurrent-fragments", "4",
+        "--retries", "10",
+        "--fragment-retries", "10",
     ]
+
+    # 带上登录态：B 站对匿名下载限速（实测慢十倍），而且常常只给最低清晰度
+    cookies = yt_dlp_cookie_file(config)
+    if cookies:
+        command += ["--cookies", str(cookies)]
+    command.append(url)
 
     if on_progress:
         on_progress("正在下载视频（低清晰度，用来抽关键帧）…")
     log.info("下载视频：%s", url)
 
-    try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=1800,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise FrameError("下载视频超时（超过 30 分钟）。视频可能太长，或网络太慢。") from exc
-    except OSError as exc:
-        raise FrameError(f"启动 yt-dlp 失败：{exc}") from exc
+    result = _run_download(command, on_progress)
 
     if result.returncode != 0:
-        tail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-5:])
+        tail = "\n".join((result.output or "").strip().splitlines()[-5:])
         raise FrameError(f"下载视频失败（yt-dlp 退出码 {result.returncode}）：\n{tail}")
 
     candidates = [

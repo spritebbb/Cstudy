@@ -106,3 +106,25 @@ class TestDefaults:
     def test_max_frames_is_bounded(self):
         """帧数直接决定花多少钱，得有个上限。"""
         assert 0 < DEFAULT_MAX_FRAMES <= 200
+
+
+class TestDownloadProgress:
+    """下载进度要能被解析出来——**不显示进度，用户会以为卡死了**。
+
+    B 站给的 CDN 节点时快时慢，同一份 10.82 MB 的文件，实测从 4 秒到 4 分半
+    都遇到过。所以进度必须报出来。
+    """
+
+    def test_parses_yt_dlp_progress_lines(self):
+        from cstudy.transcribe.frames import DOWNLOAD_PERCENT
+
+        line = "[download]  45.3% of 10.82MiB at 1.20MiB/s ETA 00:03"
+        match = DOWNLOAD_PERCENT.search(line)
+
+        assert match and float(match.group(1)) == 45.3
+
+    def test_ignores_other_lines(self):
+        from cstudy.transcribe.frames import DOWNLOAD_PERCENT
+
+        assert DOWNLOAD_PERCENT.search("[download] Destination: v.mp4") is None
+        assert DOWNLOAD_PERCENT.search("[info] 下载完成") is None

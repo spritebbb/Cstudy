@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+from ..bilibili.auth import yt_dlp_cookie_file
 from ..config import Config
 from ..logging_setup import get_logger
 from ..tools import ffmpeg_dir, find_yt_dlp
@@ -53,8 +54,13 @@ def download_audio(
         "--ffmpeg-location", ffmpeg_dir() or "",
         "--output", template,
         "--no-warnings",
-        url,
     ]
+
+    # 带上登录态：B 站对匿名下载限速，带 cookie 快得多
+    cookies = yt_dlp_cookie_file(config)
+    if cookies:
+        command += ["--cookies", str(cookies)]
+    command.append(url)
 
     if on_progress:
         on_progress("正在下载音频…")
