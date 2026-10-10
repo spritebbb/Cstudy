@@ -33,6 +33,8 @@
 | 单独验证 AI 链路 | `.venv\Scripts\python.exe scripts\test_ai.py` |
 | 单独验证 B 站链路 | `.venv\Scripts\python.exe scripts\test_bilibili.py "BV号"` |
 | 批量导入题库文件 | `.venv\Scripts\python.exe scripts\import_bank.py "文件夹" --dry-run` |
+| 扫描件 OCR 导入 | `.venv\Scripts\python.exe scripts\import_bank.py "文件.pdf" --ocr` |
+| 知识点对齐考纲 | `.venv\Scripts\python.exe scripts\map_syllabus.py --dry-run` |
 
 ---
 
@@ -63,10 +65,14 @@
 **还没做的**（第二、三版）：关键帧抽帧、AI 看图识别 PPT、错题本与遗忘曲线、
 考纲覆盖度统计、真题组卷、编程题 gcc 编译验证。
 
-**题库已导入**：闲鱼买的题库（127 个文件、119MB）用 `scripts/import_bank.py` 批量导完，
-库里 942 道题（填空 450 / 编程 320 / 程序阅读 169）。导入时按 `import.skip_types`
-滤掉选择题——四所目标校都不考。**扫描件还没导**（`慧航/`、`机构卷子2025/`、
-`c语言小绿书`），要 OCR 才行。
+**题库已导入**：闲鱼买的题库（127 个文件、119MB）用 `scripts/import_bank.py` 批量导完。
+导入时按 `import.skip_types` 滤掉选择题——四所目标校都不考。**扫描件用 `--ocr`**
+（pypdfium2 渲染成图 → 发给 DeepSeek 认，不用装 OCR 库）。
+**导完要跑 `scripts/map_syllabus.py`** 把知识点对齐到考纲，否则「考纲」标签页
+和按知识点筛选都是空的。
+
+**界面上的三个功能**：答题页的「从题库挑题」（按题型/章节/来源筛，或随机抽 N 道）、
+「组一套真题」（按考试分值比例从题库抽，不调 AI）、「考纲」标签页（哪些知识点还没题）。
 
 ### B 站接口的坑（改动前务必先看）
 
