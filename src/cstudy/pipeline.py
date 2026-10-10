@@ -258,23 +258,17 @@ class StudyPipeline:
 
         frames_dir = self.config.path("frames")
         video_path = None
+        frames_root = frames_dir / "keyframes" / f"{video.bvid}_p{video.page}"
         try:
             video_path = download_video(video.url, frames_dir, self.config, progress)
-            # **按视频分目录存**：都塞进一个 keyframes/ 的话，下一集导入时
-            # 开跑前会清空，上一集的画面就找不回来了——而"留着能回看"正是
-            # 留帧的意义（笔记里的代码是 AI 读的，想核对得看原图）。
-            frames = extract_keyframes(
-                video_path,
-                frames_dir / "keyframes" / f"{video.bvid}_p{video.page}",
-                self.config,
-                progress,
-            )
+            # 按视频分目录：这样"删这次抽的帧"能删得干净，不会误删别的
+            frames = extract_keyframes(video_path, frames_root, self.config, progress)
         except Exception as exc:
             log.warning("抽关键帧失败，这次只从字幕生成笔记：%s", exc)
             progress(f"抽关键帧没成功（{exc}），这次只从字幕生成笔记")
             return ""
         finally:
-            # 视频文件几十上百 MB，抽完帧就删；帧留着，用户想看还能看
+            # 视频一集十几 MB，抽完帧立刻删（**失败也删**，不然白占地方）
             if video_path is not None:
                 try:
                     video_path.unlink()
@@ -285,11 +279,26 @@ class StudyPipeline:
             return ""
 
         try:
-            return SlideReader(self.client, self.config).read(frames, progress)
+            slides = SlideReader(self.client, self.config).read(frames, progress)
         except Exception as exc:
             log.warning("读屏幕内容失败，这次只从字幕生成笔记：%s", exc)
             progress("读屏幕内容没成功，这次只从字幕生成笔记")
             return ""
+        finally:
+            # 关键帧读完就删——需要看原画面的话直接去看视频，留着白占地方
+            if not self.config.get("frames.keep_frames", False):
+                self._clear_frames(frames_root)
+        return slides
+
+    @staticmethod
+    def _clear_frames(frames_root: Path) -> None:
+        """删掉这次抽的关键帧和它的空目录。删不掉也不影响主流程。"""
+        try:
+            for image in frames_root.glob("*.jpg"):
+                image.unlink()
+            frames_root.rmdir()
+        except OSError:
+            log.debug("删除关键帧失败：%s", frames_root, exc_info=True)
 
     def make_notes(
         self, video: LoadedVideo, on_progress: ProgressCallback | None = None

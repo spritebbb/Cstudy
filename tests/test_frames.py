@@ -128,3 +128,25 @@ class TestDownloadProgress:
 
         assert DOWNLOAD_PERCENT.search("[download] Destination: v.mp4") is None
         assert DOWNLOAD_PERCENT.search("[info] 下载完成") is None
+
+
+class TestClearFrames:
+    """关键帧读完就删——用户说"需要的话我会去看视频"，留着白占地方。"""
+
+    def test_deletes_the_images_and_the_directory(self, tmp_path: Path):
+        from cstudy.pipeline import StudyPipeline
+
+        frames_root = tmp_path / "keyframes" / "BV1xx_p1"
+        frames_root.mkdir(parents=True)
+        (frames_root / "0001.jpg").write_bytes(b"x")
+        (frames_root / "0002.jpg").write_bytes(b"x")
+
+        StudyPipeline._clear_frames(frames_root)
+
+        assert not frames_root.exists(), "目录和里面的图都该删掉"
+
+    def test_missing_directory_is_not_an_error(self, tmp_path: Path):
+        """本来就没抽到帧时不删也是正常的，不该抛异常。"""
+        from cstudy.pipeline import StudyPipeline
+
+        StudyPipeline._clear_frames(tmp_path / "从来没建过")   # 不该抛

@@ -162,6 +162,11 @@ frames:
   # 下载清晰度上限。480p 足够看清屏幕上的字，文件还小。
   max_height: 480
 
+  # 关键帧读完就删。用户说"需要的话我会去看视频"，所以不留——
+  # 每集约 3 MB，一百集就是 300 MB，为不看的图占地方不值。
+  # 想留着自己核对（比如怀疑 AI 把代码读错了）就改成 true。
+  keep_frames: false
+
 bilibili:
   request_timeout: 30
   max_retries: 3
