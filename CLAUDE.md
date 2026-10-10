@@ -35,6 +35,7 @@
 | 批量导入题库文件 | `.venv\Scripts\python.exe scripts\import_bank.py "文件夹" --dry-run` |
 | 扫描件 OCR 导入 | `.venv\Scripts\python.exe scripts\import_bank.py "文件.pdf" --ocr` |
 | 知识点对齐考纲 | `.venv\Scripts\python.exe scripts\map_syllabus.py --dry-run` |
+| 给题少的知识点补题 | `.venv\Scripts\python.exe scripts\fill_gaps.py --dry-run` |
 
 ---
 

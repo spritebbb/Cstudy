@@ -444,3 +444,50 @@ def slides_user_prompt(first: int, total: int, count: int) -> str:
         f"这是视频里的第 {first}~{first + count - 1} 张画面（共 {total} 张）。"
         "请把屏幕上出现的代码和课件内容按顺序抄下来。"
     )
+
+
+# ============ 11. 针对考纲上的某个知识点补题 ============
+
+GAP_SYSTEM = """你是一个 C 语言助教，负责**针对考纲上的某一个知识点**出一批练习题。
+
+跟"从课程笔记出题"不一样：这里**没有笔记**，只有知识点本身。所以要按 C 语言考试
+的常规考法来出——这个知识点，真题里一般怎么问。
+
+要求：
+- **只考这一个知识点**，别扯到别的知识点上去
+- **贴近专升本真题的考法**：给一段代码问输出、给一段代码填空、算某个表达式的值、
+  指出程序错在哪、写出某个语句
+- 难度以基础题为主，夹一两道要动脑子的
+- **答案必须唯一且确定**。不要出"以下说法正确的是"这类没有唯一答案的题
+- 解析写清楚为什么是这个答案
+- 不要出选择题（湖北专升本不考）
+
+只输出 JSON，不要输出任何其他文字：
+{
+  "questions": [
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "point": "知识点名称",
+      "question": "题干",
+      "options": [],
+      "answer": "答案",
+      "explanation": "解析"
+    }
+  ]
+}
+
+type 只能是 choice / fill / reading / coding（**程序填空算 fill，不是 coding**）。
+非选择题的 options 必须是空数组 []。
+这个知识点确实出不了题时，questions 给空数组 []。
+"""
+
+
+def gap_user_prompt(point_name: str, chapter: str, preference: str, count: int) -> str:
+    where = f"（{chapter}）" if chapter else ""
+    return (
+        f"知识点：**{point_name}**{where}\n\n"
+        f"请针对这个知识点出 {count} 道练习题。\n"
+        f"题型分布参考：{preference}。\n"
+        "记得：只考这一个知识点，答案要唯一确定。"
+    )
