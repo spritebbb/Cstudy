@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,7 @@ class FakeQrLogin:
         self.fail_times = fail_times
         self.generate_calls = 0
         self.poll_calls = 0
+        self.credential = None
 
     async def generate_qrcode(self):
         self.generate_calls += 1
@@ -51,7 +53,7 @@ class FakeQrLogin:
         return FakePicture(FAKE_PNG)
 
     def get_credential(self):
-        return None
+        return self.credential
 
 
 def make_session(monkeypatch, fail_times: int) -> tuple[QrCodeSession, FakeQrLogin]:
@@ -97,3 +99,65 @@ class TestQrCodeRetry:
         with pytest.raises(BilibiliAuthError) as exc:
             session.poll()
         assert "先调用 start()" in str(exc.value)
+
+
+class TestCredentialFromSessionCookies:
+    """B 站改用 Set-Cookie 下发登录 cookie，库从 URL 里抠的那套已经失效。
+
+    实测：crossDomain 的 URL 现在只剩 ticket / gourl / first_domain，
+    库抠出来六个空字符串，而且不报错——脚本照样打印"登录成功"，
+    直到导入视频时才发现登录态是空的。
+    """
+
+    def _session(self, monkeypatch, jar, library_credential):
+        session, fake = make_session(monkeypatch, fail_times=0)
+        fake.credential = library_credential
+        monkeypatch.setattr(
+            auth_module, "get_session", lambda: SimpleNamespace(cookies=jar)
+        )
+        return session
+
+    def test_reads_cookies_from_session_jar(self, monkeypatch):
+        jar = {"SESSDATA": "s" * 222, "bili_jct": "j" * 32, "DedeUserID": "12345678"}
+        library = SimpleNamespace(sessdata="", ac_time_value="t" * 32)
+        session = self._session(monkeypatch, jar, library)
+
+        credential = session.credential()
+        assert credential.sessdata == "s" * 222
+        assert credential.bili_jct == "j" * 32
+        assert credential.dedeuserid == "12345678"
+        # ac_time_value 来自响应里的 refresh_token，库那边是好的
+        assert credential.ac_time_value == "t" * 32
+
+    def test_falls_back_to_library_if_jar_empty(self, monkeypatch):
+        """万一 B 站哪天又改回在 URL 里带 cookie。"""
+        library = SimpleNamespace(sessdata="from-url", ac_time_value="")
+        session = self._session(monkeypatch, {}, library)
+
+        assert session.credential().sessdata == "from-url"
+
+    def test_raises_clearly_when_nothing_available(self, monkeypatch):
+        library = SimpleNamespace(sessdata="", ac_time_value="")
+        session = self._session(monkeypatch, {}, library)
+
+        with pytest.raises(BilibiliAuthError) as exc:
+            session.credential()
+        assert "没拿到登录凭据" in str(exc.value)
+        assert "cstudy.log" in str(exc.value)  # 告诉用户该发什么给我
+
+    def test_missing_ac_time_value_does_not_break_login(self, monkeypatch):
+        """拿不到 ac_time_value 只影响自动续期，不该让登录失败。"""
+        jar = {"SESSDATA": "s" * 222}
+
+        def boom():
+            raise RuntimeError("库内部状态没设置")
+
+        session, fake = make_session(monkeypatch, fail_times=0)
+        fake.get_credential = boom
+        monkeypatch.setattr(
+            auth_module, "get_session", lambda: SimpleNamespace(cookies=jar)
+        )
+
+        credential = session.credential()
+        assert credential.sessdata == "s" * 222
+        assert credential.ac_time_value in (None, "")

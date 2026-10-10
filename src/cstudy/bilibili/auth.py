@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from bilibili_api import Credential, login_v2
+from bilibili_api.utils.network import get_session
 
 from ..config import Config
 from ..logging_setup import get_logger
@@ -151,8 +152,70 @@ class QrCodeSession:
             return STATE_TIMEOUT
         return STATE_WAITING
 
+    async def _session_cookies(self) -> dict[str, str]:
+        """读 HTTP 会话 cookie jar 里的 cookie。
+
+        必须在自己的事件循环里调用——会话是按事件循环存的。
+        """
+        session = get_session()
+        jar = getattr(session, "cookies", None)
+        if jar is None:
+            return {}
+        try:
+            names = list(jar.keys())
+        except Exception:  # jar 类型变了也不该让登录失败
+            log.debug("cookie jar 读不出来", exc_info=True)
+            return {}
+        return {name: jar[name] for name in names}
+
     def credential(self) -> Credential:
-        return self._qr.get_credential()
+        """取登录凭据。
+
+        不能直接用库的 get_credential()：B 站已经不在 crossDomain 的 URL 里
+        带 cookie 了（那个 URL 现在只剩 ticket / gourl / first_domain），而
+        bilibili-api 17.4.2 仍在按老格式从 URL 里抠 SESSDATA / bili_jct /
+        DedeUserID，结果抠出六个空字符串。
+
+        麻烦的是它**不报错**：库照常返回一个"成功"的凭据，脚本照常打印
+        "登录成功"，但存下来的登录态是空的，直到导入视频时才发现拿不到字幕。
+
+        真正的 cookie 随 Set-Cookie 响应头下发，会进 HTTP 会话的 cookie jar，
+        所以从那里读。ac_time_value 是例外——它来自响应里的 refresh_token，
+        库那边拿得到。
+        """
+        cookies = self._run(self._session_cookies())
+        sessdata = cookies.get("SESSDATA", "")
+
+        # ac_time_value 用于刷新登录态，能拿到就拿
+        ac_time_value = ""
+        try:
+            ac_time_value = self._qr.get_credential().ac_time_value or ""
+        except Exception:
+            log.debug("库没给出 ac_time_value", exc_info=True)
+
+        if not sessdata:
+            # 兜底：万一 B 站哪天又改回把 cookie 放在 URL 里
+            try:
+                fallback = self._qr.get_credential()
+            except Exception:
+                fallback = None
+            if fallback is not None and fallback.sessdata:
+                log.info("从库的解析结果里拿到了登录态")
+                return fallback
+
+            raise BilibiliAuthError(
+                "登录看起来成功了，但没拿到登录凭据（SESSDATA）。\n"
+                "这多半是 B 站又改了登录接口，需要更新代码。\n"
+                "请把 logs/cstudy.log 的最后 50 行发给我。"
+            )
+
+        log.info("登录凭据已就绪（SESSDATA %d 字符）", len(sessdata))
+        return Credential(
+            sessdata=sessdata,
+            bili_jct=cookies.get("bili_jct", ""),
+            dedeuserid=cookies.get("DedeUserID", ""),
+            ac_time_value=ac_time_value,
+        )
 
     def close(self) -> None:
         try:
