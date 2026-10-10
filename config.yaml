@@ -9,6 +9,8 @@ paths:
   logs: logs
   cookies: data/cookies/bilibili.json
   audio: data/audio
+  # 关键帧：抽出来的画面存在这里（视频本体抽完就删，帧留着方便回看）
+  frames: data/frames
 
 ai:
   provider: deepseek
@@ -114,6 +116,31 @@ transcribe:
   # auto 会按 device 自动选择 cuda:float16 或 cpu:int8
   compute_type: auto
   language: zh
+
+# 关键帧：把视频里**屏幕上写的代码和 PPT** 也读进笔记。
+# 字幕只记了老师说的话，屏幕上写的东西字幕里没有——对 C 语言课来说那是大头。
+#
+# **默认关闭**。技术上跑得通（实测 AI 能把 VS 编辑器里的代码和 PPT 一字不差读出来），
+# 但每生成一份笔记都要多下一次视频 + 多几次 AI 看图调用，而题库里已经有一千多道
+# 真题带着代码了——想看代码直接刷题更划算。哪一集真想看屏幕内容，把它改成 true。
+frames:
+  enabled: false
+
+  # 画面变化超过这个阈值就算"新画面"。0.3 实测够用：太小会抽出一堆几乎一样的帧
+  # 白花钱，太大又会漏掉切屏。
+  scene_threshold: 0.3
+
+  # 一部视频最多读这么多帧（超了就均匀挑）。帧数直接决定多花多少钱。
+  max_frames: 60
+
+  # 一次送几张给 AI 看
+  per_call: 8
+
+  # 抽帧时缩到这个宽度再存。960 够看清代码，单帧约 33KB。
+  width: 960
+
+  # 下载清晰度上限。480p 足够看清屏幕上的字，文件还小。
+  max_height: 480
 
 bilibili:
   request_timeout: 30

@@ -5,6 +5,7 @@ from .importer import ImportOutcome, QuestionImporter
 from .notes import NoteGenerator, render_note_file
 from .quiz import QuizGenerator, QuizPlan
 from .review import Reviewer
+from .slides import SlideReader
 
 __all__ = [
     "AIError",
@@ -15,5 +16,6 @@ __all__ = [
     "QuizGenerator",
     "QuizPlan",
     "Reviewer",
+    "SlideReader",
     "render_note_file",
 ]

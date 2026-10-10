@@ -16,7 +16,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .ai import DeepSeekClient, NoteGenerator, QuizGenerator, Reviewer, render_note_file
+from .ai import (
+    DeepSeekClient,
+    NoteGenerator,
+    QuizGenerator,
+    Reviewer,
+    SlideReader,
+    render_note_file,
+)
 from .ai.notes import safe_filename
 from .bilibili import (
     BilibiliError,
@@ -32,7 +39,7 @@ from .db import Database
 from .logging_setup import get_logger
 from .models import Question, ReviewReport
 from .subtitle import Segment
-from .transcribe import Transcriber, download_audio
+from .transcribe import Transcriber, download_audio, download_video, extract_keyframes
 
 log = get_logger(__name__)
 
@@ -60,6 +67,9 @@ class LoadedVideo:
     url: str
     segments: list[Segment]
     subtitle_source: str
+    # 视频画面上的内容（屏幕上的代码、课件文字），见 _read_slides()。
+    # 抽帧失败就是空字符串——笔记退化成"只有字幕"，不该因此生成不了。
+    visual_text: str = ""
 
     @property
     def subtitle_label(self) -> str:
@@ -236,12 +246,57 @@ class StudyPipeline:
 
     # ---------- 第 2 步：生成笔记 ----------
 
+    def _read_slides(self, video: LoadedVideo, progress: ProgressCallback) -> str:
+        """下低清视频 → 抽关键帧 → 让 AI 读屏幕上的代码和课件。
+
+        **这一步出任何问题都不该让笔记生成不了**：它要多下一次视频、多花几次
+        AI 调用，网络、B 站接口、ffmpeg 版本都可能出岔子。真出岔子就退化成
+        "只从字幕生成"——少点内容，总比什么都没有强。
+        """
+        if not self.config.get("frames.enabled", True):
+            return ""
+
+        frames_dir = self.config.path("frames")
+        video_path = None
+        try:
+            video_path = download_video(video.url, frames_dir, self.config, progress)
+            frames = extract_keyframes(
+                video_path, frames_dir / "keyframes", self.config, progress
+            )
+        except Exception as exc:
+            log.warning("抽关键帧失败，这次只从字幕生成笔记：%s", exc)
+            progress(f"抽关键帧没成功（{exc}），这次只从字幕生成笔记")
+            return ""
+        finally:
+            # 视频文件几十上百 MB，抽完帧就删；帧留着，用户想看还能看
+            if video_path is not None:
+                try:
+                    video_path.unlink()
+                except OSError:
+                    log.debug("删除临时视频失败", exc_info=True)
+
+        if not frames:
+            return ""
+
+        try:
+            return SlideReader(self.client, self.config).read(frames, progress)
+        except Exception as exc:
+            log.warning("读屏幕内容失败，这次只从字幕生成笔记：%s", exc)
+            progress("读屏幕内容没成功，这次只从字幕生成笔记")
+            return ""
+
     def make_notes(
         self, video: LoadedVideo, on_progress: ProgressCallback | None = None
     ) -> NoteResult:
         progress = on_progress or _noop
+        # 先读屏幕内容：字幕只有老师说的话，代码和课件在屏幕上。
+        # 这一步失败不影响生成笔记，退化成"只有字幕"就行。
+        video.visual_text = self._read_slides(video, progress)
+
         progress("正在生成学习笔记…")
-        body = self.note_generator.generate(video.segments, video.title, progress)
+        body = self.note_generator.generate(
+            video.segments, video.title, progress, video.visual_text
+        )
 
         # 生成完先让 AI 复查一遍。写文件和入库的都是复查后的版本，
         # 免得没把关的内容落盘之后还得手工清。

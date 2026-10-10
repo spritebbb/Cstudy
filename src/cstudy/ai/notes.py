@@ -27,13 +27,20 @@ class NoteGenerator:
         segments: list[Segment],
         title: str = "",
         on_progress: ProgressCallback | None = None,
+        visual: str = "",
     ) -> str:
-        """把字幕变成 Markdown 笔记。返回纯笔记正文（不含文件头）。"""
+        """把字幕变成 Markdown 笔记。返回纯笔记正文（不含文件头）。
+
+        visual 是视频画面上的内容（屏幕上写的代码、课件文字），见 `ai/slides.py`。
+        字幕只有老师说的话，代码得从画面上来。
+        """
         if not segments:
             raise ValueError("没有字幕内容，无法生成笔记")
 
         blocks = chunk_segments(segments, self.chunk_minutes, self.max_chars)
         log.info("字幕 %d 条，切成 %d 块", len(segments), len(blocks))
+        if visual.strip():
+            log.info("另有画面内容 %d 字，会一起送给每一段", len(visual))
 
         partials: list[str] = []
         for index, block in enumerate(blocks, start=1):
@@ -47,7 +54,7 @@ class NoteGenerator:
                         {
                             "role": "user",
                             "content": prompts.note_user_prompt(
-                                render(block), index, len(blocks)
+                                render(block), index, len(blocks), visual
                             ),
                         },
                     ]
