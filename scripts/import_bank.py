@@ -36,6 +36,7 @@ from cstudy.ai.importer import DEFAULT_MAX_CHARS, split_by_questions  # noqa: E4
 from cstudy.config import get_config  # noqa: E402
 from cstudy.db import Database  # noqa: E402
 from cstudy.logging_setup import setup_logging  # noqa: E402
+from cstudy.models import DataError  # noqa: E402
 
 # LibreOffice 在标准安装位置。.doc（老式二进制 Word）只有它能读。
 SOFFICE = Path(r"C:\Program Files\LibreOffice\program\soffice.exe")
@@ -262,11 +263,18 @@ def main() -> int:
 
     grand_parsed = grand_saved = grand_skipped = grand_dup = 0
     failures: list[tuple[Path, str]] = []
+    empty: list[tuple[Path, str]] = []
 
     for index, (path, text) in enumerate(pending, start=1):
         print(f"\n[{index}/{len(pending)}] {path.name}")
         try:
             outcome = importer.parse(text, on_progress=lambda s: print(f"    · {s}"))
+        except DataError as exc:
+            # 这个文件里本来就没题（参考答案、代码片段），或者全是选择题被滤光了。
+            # **不是出错**——所以单独归一类，别吓用户。
+            print(f"    跳过：{exc}")
+            empty.append((path, str(exc)))
+            continue
         except Exception as exc:
             print(f"    解析失败：{exc}")
             failures.append((path, str(exc)))
@@ -292,8 +300,15 @@ def main() -> int:
     print("\n" + "=" * 72)
     print(f"解析出 {grand_parsed} 道，过滤掉 {grand_skipped} 道，去重 {grand_dup} 道，"
           f"入库 {grand_saved} 道")
+    if empty:
+        # 参考答案、代码片段这类文件里本来就没题，列出来让用户知道少了什么就行
+        print(f"\n{len(empty)} 个文件里没有你要的题型，跳过了（不是出错）：")
+        for path, reason in empty[:12]:
+            print(f"  · {path.name[:44]:<46}{reason[:38]}")
+        if len(empty) > 12:
+            print(f"  · …还有 {len(empty) - 12} 个，完整的在 logs/cstudy.log")
     if failures:
-        print(f"\n有 {len(failures)} 个文件失败：")
+        print(f"\n有 {len(failures)} 个文件**真出错了**（这些要看看）：")
         for path, reason in failures:
             print(f"  · {path.name[:44]:<46}{reason[:60]}")
     print(f"\n库里现在共 {db.stats().get('题目', '?')} 道题。")
