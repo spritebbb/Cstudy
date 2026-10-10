@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 from cstudy.config import Config  # noqa: E402
 from cstudy.db import Database  # noqa: E402
 from cstudy.models import Question  # noqa: E402
+from cstudy.ui import rendering  # noqa: E402
 from cstudy.ui.filter_dialog import FilterDialog  # noqa: E402
 from cstudy.ui.quiz_panel import QuizPanel  # noqa: E402
 from cstudy.ui.rendering import material_html  # noqa: E402
@@ -262,3 +263,67 @@ class TestQuizPanelRendering:
         shown = panel.feedback_view.toPlainText()
         assert "12345" in shown and "234" in shown
         assert shown.count("\n") >= 2
+
+
+class TestFonts:
+    """字体：默认那套 `<pre>` 落到 Courier New，又小又细，看久了伤眼。
+
+    这里验证「写进去的字体 Qt 真的认」，光看 HTML 字符串不算数。
+    """
+
+    def _parsed_format(self, html: str):
+        from PyQt6.QtGui import QTextDocument
+
+        doc = QTextDocument()
+        doc.setHtml(html)
+        iterator = doc.begin().begin()
+        while not iterator.atEnd():
+            fragment = iterator.fragment()
+            if fragment.isValid():
+                return fragment.charFormat()
+            iterator += 1
+        raise AssertionError("没解析出任何文本")
+
+    def test_style_attribute_is_not_broken_by_nested_quotes(self):
+        """踩过：`style='...'Consolas'...'`——单引号套单引号，属性当场截断，样式全废。"""
+        html = material_html("int main()")
+
+        assert html.startswith('<pre style="')
+        assert html.count('"') == 2
+
+    def test_qt_actually_applies_the_configured_font(self):
+        rendering.configure("Consolas", 13)
+
+        fmt = self._parsed_format(material_html("int main()"))
+
+        families = list(fmt.fontFamilies())
+        assert families[0] == "Consolas"
+        assert "Microsoft YaHei" in families, "中文没兜底字体，会变方框"
+        assert fmt.fontPointSize() == 13.0
+
+    def test_chinese_falls_back_to_a_cjk_font(self):
+        """配置里填的通常是纯英文等宽字体，中文得自己补一个，不然是方框。"""
+        rendering.configure("Fira Code")
+
+        families = list(self._parsed_format(material_html("指针")).fontFamilies())
+
+        assert families[0] == "Fira Code"
+        assert any("YaHei" in name or "Noto" in name for name in families)
+
+    def test_broken_config_does_not_break_the_font(self):
+        rendering.configure("", None)          # 配置留空
+        rendering.configure("Consolas", "十二")  # 字号写成中文
+
+        fmt = self._parsed_format(material_html("x"))
+
+        assert list(fmt.fontFamilies())[0] == "Consolas"
+        assert fmt.fontPointSize() > 0
+
+    def test_default_is_bigger_than_the_bare_pre(self):
+        """裸 `<pre>` 的字号是 0（用默认那套小的），我们至少得比它大。"""
+        rendering.configure("Consolas", 12)
+
+        assert self._parsed_format(material_html("x")).fontPointSize() >= 12
+
+    def teardown_method(self, _method):
+        rendering.configure("Consolas", 12)   # 别把状态漏给别的测试

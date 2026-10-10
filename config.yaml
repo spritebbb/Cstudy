@@ -3,6 +3,18 @@
 app:
   name: C语言备考助手
 
+# 界面字体。觉得字小、或者想换字体，改这里就行，不用找改代码。
+# 这台机器上装了的、适合看的：微软雅黑、等线(DengXian)、Noto Sans SC。
+ui:
+  # 界面文字（按钮、标签、笔记、进度）的字体。微软雅黑是最耐看的中文界面字体。
+  font_family: "Microsoft YaHei"
+  font_size: 11
+
+  # 题干和代码用的**等宽**字体——代码只有这样才对得齐。
+  # Consolas 是 Windows 上最清楚的等宽字体；中文会自动落到下面的微软雅黑上。
+  mono_family: "Consolas"
+  mono_size: 12
+
 paths:
   database: data/cstudy.db
   notes: notes

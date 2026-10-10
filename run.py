@@ -61,18 +61,40 @@ def main() -> int:
         log.warning("缺少外部工具：%s（只有需要语音转写时才会用到）", "、".join(missing))
 
     # 界面相关的 import 放在后面，这样配置出错时不用先加载 Qt
+    from PyQt6.QtGui import QFont
     from PyQt6.QtWidgets import QApplication
 
+    from cstudy.ui import rendering
     from cstudy.ui.main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName(str(config.get("app.name", "C语言备考助手")))
+    _apply_fonts(app, config, QFont, rendering)
 
     window = MainWindow(config, db)
     window.show()
 
     log.info("界面已启动")
     return app.exec()
+
+
+def _apply_fonts(app, config, QFont, rendering) -> None:
+    """按 config.yaml 的 `ui:` 段设置字体。
+
+    **不设的话 Qt 会给一套很小很淡的默认字体**，中文还发虚，看久了伤眼。
+    配置写坏了就退回默认值——字体不该是跑不起来的原因。
+    """
+    family = str(config.get("ui.font_family", "") or "Microsoft YaHei")
+    try:
+        size = max(8, int(config.get("ui.font_size", 11)))
+    except (TypeError, ValueError):
+        size = 11
+    app.setFont(QFont(family, size))
+
+    rendering.configure(
+        mono_family=str(config.get("ui.mono_family", "") or "Consolas"),
+        mono_size=config.get("ui.mono_size", 12),
+    )
 
 
 if __name__ == "__main__":

@@ -611,6 +611,37 @@ AI 看到题干里有代码就判成 `coding`。
 
 ---
 
+## 2026-10-11 界面字体：换掉那套又小又虚的默认字体
+
+用户反馈"字体不好看、太伤眼"。查下来**根因是没设字体**：
+
+`<pre>` 不指定 `font-family` 时，Qt 落到纯 `monospace`——在 Windows 上就是
+**Courier New**，细、发虚、字号还小。用 `QTextDocument` 验证过：裸 `<pre>` 解析出来
+是 `['monospace']`、字号 `0`（用默认那套小的）。
+
+**改法**：字体写进 `config.yaml` 的 `ui:` 段，启动时由 `run.py` 应用：
+
+- 界面文字：**微软雅黑** 11pt
+- 题干和代码：**Consolas** 12pt，中文兜底到微软雅黑
+
+这台机器上验证过可用的字体（`C:\Windows\Fonts` 里确实有）：
+微软雅黑 `msyh.ttc`、等线 `Deng.ttf`、Noto Sans SC `NotoSansSC-VF.ttf`、
+Consolas `consola.ttf`。
+
+**踩的坑**：`style` 属性里字体名带单引号，属性本身就必须用双引号——
+写成 `style='...font-family:'Consolas'...'` 是**单引号套单引号**，
+属性当场被截断，整套样式全失效。
+
+**验证方式**：光看 HTML 字符串不算数，用 `QTextDocument.setHtml()` 之后
+读 `charFormat().fontFamilies()` 和 `fontPointSize()`，确认 Qt **真的解析到了**
+配置的字体和字号。
+
+**顺带说明**：用户提到的 "Anthropic Sans" 并不存在——Anthropic 的品牌字体是
+Styrene 和 Tiempos，都是授权字体，不会随系统装上，也没法塞进这个程序。
+如实说明后换成了系统上确实有的好字体。
+
+---
+
 ## 待办 / 已知风险
 
 - **图片识别未经实测**：`deepseek-flash` 支持图片输入是从 `/models` 接口的
