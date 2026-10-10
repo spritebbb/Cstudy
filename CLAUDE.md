@@ -6,14 +6,18 @@
 
 ## 会话开始时的固定动作
 
-本项目已安装插件 **`claude-code-setup`**（来源：`anthropic-plugin-directory`，Anthropic 官方目录）。
+**不需要每次调用 recommender skill 了。** 本项目的自动化已经装完并实测过，
+清单见下面「已装好的 Claude Code 自动化」一节，不要重复安装。
 
-**每个新会话开始处理本项目时，第一件事是调用该插件的 `claude-automation-recommender` skill**，
-让它分析当前代码库，给出适合本项目的 Claude Code 自动化建议（hooks / skills / subagents / MCP servers）。
+只有这两种情况才重新跑一次：
 
-- 调用方式：Skill 工具，skill 名 `claude-code-setup:claude-automation-recommender`
-- 如果该 skill 不在可用列表里，说明插件没生效——先运行 `claude plugin list` 确认状态，
-  必要时 `claude plugin enable claude-code-setup`，然后提示用户重启会话。
+- 换了机器，或怀疑 `.claude/` 里的配置缺失
+- Claude Code 出了新能力，想看看还有什么值得装
+
+跑法：插件 `claude-code-setup`（来源 `anthropic-plugin-directory`）的
+`claude-automation-recommender` skill。如果该 skill 不在可用列表里，说明插件没生效——
+先 `claude plugin list` 确认状态，必要时 `claude plugin enable claude-code-setup`，
+然后提示用户重启会话。
 
 ---
 
