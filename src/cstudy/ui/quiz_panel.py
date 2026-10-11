@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from html import escape
 from itertools import zip_longest
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -31,12 +31,36 @@ from ..db import Database
 from ..grading import describe_expected, grade_choice, normalize_choice_answer
 from ..logging_setup import get_logger
 from ..models import Question
+from ..runner import RunResult, run_c_code
 from .rendering import material_html
 
 log = get_logger(__name__)
 
 # 不同题型给不同高度的输入框：填空题一行就够，编程题得给足地方
 INPUT_HEIGHT = {"fill": 60, "reading": 140, "coding": 220}
+
+
+class RunCodeWorker(QThread):
+    """编译并运行用户写的代码。
+
+    **必须放后台**：编译要一两秒，而代码里要是写了 `while(1)`，
+    要等超时（好几秒）才结束——主线程跑的话界面会整个卡住。
+    """
+
+    done = pyqtSignal(object)   # RunResult
+
+    def __init__(self, source: str, stdin_text: str) -> None:
+        super().__init__()
+        self._source = source
+        self._stdin = stdin_text
+
+    def run(self) -> None:
+        try:
+            result = run_c_code(self._source, self._stdin)
+        except Exception as exc:
+            log.exception("编译运行代码时出了意外")
+            result = RunResult(output=f"跑的时候出了点意外：{exc}")
+        self.done.emit(result)
 
 
 @dataclass
@@ -62,6 +86,7 @@ class QuizPanel(QWidget):
         self._items: list[QuizItem] = []
         self._index = 0
         self._answered = False   # 当前这题是否已经提交过
+        self._run_worker: RunCodeWorker | None = None
         self._build_ui()
         self._show_empty("还没有题目。先导入一个视频、生成笔记，再点「开始刷题」。")
 
@@ -115,6 +140,8 @@ class QuizPanel(QWidget):
         self.submit_button.clicked.connect(self._submit)
         body_layout.addWidget(self.submit_button)
 
+        body_layout.addWidget(self._build_run_box())
+
         self.feedback_view = QTextBrowser()
         self.feedback_view.setOpenExternalLinks(False)
         self.feedback_view.hide()
@@ -154,6 +181,63 @@ class QuizPanel(QWidget):
         bottom.addStretch(1)
         bottom.addWidget(self.finish_button)
         root.addLayout(bottom)
+
+    # ---------- 编程题：跑一下 ----------
+
+    def _build_run_box(self) -> QWidget:
+        """编程题专用的「跑一下」。别的题型下面会把它藏起来。
+
+        为什么要有这个：光"写完对照参考答案"练不出程序设计能力——C 语言恰恰是
+        **看着对、编译就报错**的科目（漏分号、少 `&`、数组越界），
+        得让编译器来告诉你。这 31 分是软件原来完全帮不上忙的地方。
+        """
+        self.run_box = QWidget()
+        layout = QVBoxLayout(self.run_box)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        hint = QLabel("写完可以先跑一下，编译错误会告诉你在第几行、错在哪。")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        layout.addWidget(QLabel("程序需要的输入（程序里 scanf 读的那些，没有就留空）："))
+        self.stdin_edit = QPlainTextEdit()
+        self.stdin_edit.setPlaceholderText('每行一个。比如程序要 scanf("%d",&n); 这里就填 5')
+        self.stdin_edit.setMaximumHeight(56)
+        layout.addWidget(self.stdin_edit)
+
+        self.run_button = QPushButton("跑一下（编译并运行）")
+        self.run_button.clicked.connect(self._run_code)
+        layout.addWidget(self.run_button)
+
+        self.run_output = QTextBrowser()
+        self.run_output.setOpenExternalLinks(False)
+        self.run_output.hide()
+        layout.addWidget(self.run_output)
+
+        return self.run_box
+
+    def _run_code(self) -> None:
+        source = self.answer_edit.toPlainText().strip()
+        if not source:
+            QMessageBox.information(self, "还没写代码", "先在上面写点代码，再点「跑一下」。")
+            return
+        if self._run_worker is not None and self._run_worker.isRunning():
+            return
+
+        self.run_button.setEnabled(False)
+        self.run_button.setText("正在编译运行…")
+        self.run_output.setHtml(material_html("正在编译…"))
+        self.run_output.show()
+
+        self._run_worker = RunCodeWorker(source, self.stdin_edit.toPlainText())
+        self._run_worker.done.connect(self._on_run_done)
+        self._run_worker.start()
+
+    def _on_run_done(self, result: RunResult) -> None:
+        self.run_button.setEnabled(True)
+        self.run_button.setText("跑一下（编译并运行）")
+        self.run_output.setHtml(material_html(result.output))
+        self.run_output.show()
 
     # ---------- 装载题目 ----------
 
@@ -237,6 +321,9 @@ class QuizPanel(QWidget):
             self.answer_edit.setFixedHeight(INPUT_HEIGHT.get(question.type, 100))
 
         self._set_input_visible(choice=is_choice, text=not is_choice)
+        # 只有程序设计题能跑——程序填空的代码本来就缺一块，跑了必然报错
+        self.run_box.setVisible(question.exam_type == "coding")
+        self.run_output.hide()
 
     def _rebuild_choices(self, question: Question) -> None:
         """每题重建单选按钮——选项是随题目变的，不能复用。"""
@@ -256,6 +343,10 @@ class QuizPanel(QWidget):
     def _set_input_visible(self, choice: bool, text: bool) -> None:
         self.choice_box.setVisible(choice)
         self.answer_edit.setVisible(text)
+        # 跑代码那块只在程序设计题上显示（由 _show_current 决定）。
+        # 这里先把"没答案框"的情况（空状态、成绩页）一并藏掉。
+        if not text:
+            self.run_box.hide()
 
     def _hide_feedback(self) -> None:
         self.feedback_view.hide()

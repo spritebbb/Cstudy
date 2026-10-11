@@ -63,6 +63,43 @@ def ffmpeg_dir() -> str | None:
     return str(Path(found).parent) if found else None
 
 
+def find_gcc() -> str | None:
+    """找 gcc.exe。找不到返回 None。
+
+    **故意不缓存**：用户很可能是在软件开着的时候才去装 MinGW，装完点「跑一下」
+    就该立刻能用——缓存住的话得重启软件才行（find_ffmpeg 那边缓存是因为
+    它在启动时就被调用好几次，而这个只在点按钮时调一次）。
+    """
+    found = shutil.which("gcc")
+    if found:
+        return found
+
+    # winget 装的（WinLibs 是免安装 zip，MSYS2 和 Code::Blocks 也自带 gcc）
+    for pattern in (
+        "BrechtSanders.WinLibs*/**/bin/gcc.exe",
+        "MartinStorsjo.LLVM-Mingw*/**/bin/gcc.exe",
+        "CodeBlocks*/**/bin/gcc.exe",
+    ):
+        found = _search_winget(pattern)
+        if found:
+            log.debug("从 winget 目录找到 gcc：%s", found)
+            return found
+
+    # 手动装的常见位置
+    for candidate in (
+        Path("C:/msys64/mingw64/bin/gcc.exe"),
+        Path("C:/MinGW/bin/gcc.exe"),
+        Path("C:/TDM-GCC-64/bin/gcc.exe"),
+        Path("C:/Program Files/Dev-Cpp/MinGW64/bin/gcc.exe"),
+        Path("C:/Program Files (x86)/Dev-Cpp/MinGW64/bin/gcc.exe"),
+    ):
+        if candidate.is_file():
+            log.debug("从常见目录找到 gcc：%s", candidate)
+            return str(candidate)
+
+    return None
+
+
 def describe_missing_tools() -> list[str]:
     """返回缺失工具的中文说明，供界面提示。"""
     missing = []

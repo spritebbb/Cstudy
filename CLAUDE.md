@@ -36,6 +36,7 @@
 | 扫描件 OCR 导入 | `.venv\Scripts\python.exe scripts\import_bank.py "文件.pdf" --ocr` |
 | 知识点对齐考纲 | `.venv\Scripts\python.exe scripts\map_syllabus.py --dry-run` |
 | 给题少的知识点补题 | `.venv\Scripts\python.exe scripts\fill_gaps.py --dry-run` |
+| 装 C 编译器（gcc） | `winget install BrechtSanders.WinLibs.POSIX.UCRT` |
 
 ---
 
@@ -63,15 +64,21 @@
 **B 站字幕抓取已于 2026-10-10 实测通过**（BV1cp421X755，404 条 CC 字幕）。
 它此前一直是"唯一未验证的环节"，第一次真跑就暴露出四个连着的 bug（见下）。
 
-**还没做的**（第二、三版）：只剩**编程题 gcc 编译验证**（机器上没装 gcc，
-而且题库里不少"编程题"答案其实是代码片段，本来就编译不了，收益存疑）。
-（关键帧抽帧、AI 看图识别 PPT、考纲覆盖度统计、真题组卷、错题本与遗忘曲线
-都已做完。）
+**还没做的**（第二、三版）：**规划里的都做完了。**
+（关键帧抽帧、AI 看图识别 PPT、考纲覆盖度统计、真题组卷、错题本与遗忘曲线、
+编程题 gcc 编译验证，全部已完成。）
 
 **界面上的五个 tab**：进度 / 笔记 / 答题 / 考纲 / 错题本。
 答题页的「从题库挑题」（按题型/章节/来源筛，或随机抽 N 道）、
-「组一套真题」（按考试分值比例从题库抽，不调 AI）；
+「组一套真题」（按考试分值比例从题库抽，不调 AI）、
+**程序设计题的「跑一下」**（编译并运行用户写的代码，见下）；
 「考纲」页看哪些知识点还没题；「错题本」页按遗忘曲线安排复习。
+
+**「跑一下」用的编译器**：MinGW-w64（WinLibs，winget 装的，
+在 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_*\mingw64\bin\gcc.exe`）。
+查找逻辑在 `tools.py` 的 `find_gcc()`——**故意不缓存**，因为用户很可能在软件开着时
+才去装编译器，装完点「跑一下」就该能用。编译和运行在后台线程里跑
+（代码里写 `while(1)` 会卡住主线程），错误会翻译成中文（见 `runner.py` 的 `ERROR_HINTS`）。
 
 **题型有两套口径，别搞混**：库里的 `type` 是三类（fill/reading/coding），
 而**考试是四类**——"填空"和"程序填空"是两道不同的大题（48 分 vs 36 分）。

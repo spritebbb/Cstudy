@@ -327,3 +327,58 @@ class TestFonts:
 
     def teardown_method(self, _method):
         rendering.configure("Consolas", 12)   # 别把状态漏给别的测试
+
+
+class TestRunBox:
+    """编程题的「跑一下」——只在程序设计题上出现。
+
+    这 31 分是软件原来完全帮不上忙的地方：以前只能"写完对照参考答案"，
+    可 C 语言恰恰是看着对、编译就报错的科目。
+    """
+
+    def panel_with(self, db: Database, qtype: str) -> QuizPanel:
+        """装一道题进去，返回面板。"""
+        stem = (
+            "编写一个程序，输出 Hello World。"
+            if qtype == "coding"
+            else "表达式 1+1 的值为 ______。"
+        )
+        question_id = db.save_questions([Question(type=qtype, question=stem, answer="1")])[0]
+        question = Question.from_row(db.query_questions()[0])
+        panel = QuizPanel(db)
+        panel.load([question], [question_id])
+        return panel
+
+    def test_hidden_for_a_plain_fill(self, qapp, db: Database):
+        panel = self.panel_with(db, "fill")
+
+        # 用 isHidden 而不是 isVisible：面板本身没 show() 过，
+        # isVisible() 会因为"父窗口没显示"而一律返回 False，测不出东西
+        assert panel.run_box.isHidden()
+
+    def test_shown_for_a_coding_question(self, qapp, db: Database):
+        panel = self.panel_with(db, "coding")
+
+        assert not panel.run_box.isHidden()
+        assert panel.run_button.isEnabled()
+
+    def test_clicking_with_empty_code_only_warns(self, qapp, db: Database, monkeypatch):
+        """没写代码就点「跑一下」：提醒一句就行，别真起线程去编译空文件。
+
+        注意弹窗必须 mock 掉——离屏环境下 QMessageBox 会一直等用户点击，测试会挂死。
+        """
+        from cstudy.ui import quiz_panel
+
+        warned: list[str] = []
+        monkeypatch.setattr(
+            quiz_panel.QMessageBox,
+            "information",
+            lambda *args, **kwargs: warned.append(str(args[-1])),
+        )
+        panel = self.panel_with(db, "coding")
+        panel.answer_edit.setPlainText("   ")
+
+        panel._run_code()
+
+        assert panel._run_worker is None, "不该起线程"
+        assert warned and "代码" in warned[0]
