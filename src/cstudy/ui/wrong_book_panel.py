@@ -22,11 +22,9 @@ from ..db import Database
 from ..logging_setup import get_logger
 from ..models import Question
 from ..wrong_book import due_items, intervals_from_config, list_wrong, master_after_from_config
+from .theme import DARK, Theme
 
 log = get_logger(__name__)
-
-DUE_COLOR = "#c0392b"      # 该复习了，醒目一点
-DONE_COLOR = "#7f8c8d"     # 已掌握，退到背景里
 
 
 class WrongBookPanel(QWidget):
@@ -34,10 +32,17 @@ class WrongBookPanel(QWidget):
 
     review_requested = pyqtSignal(list, list)   # list[Question], list[int]
 
-    def __init__(self, db: Database, config: Config, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        config: Config,
+        parent: QWidget | None = None,
+        theme: Theme = DARK,
+    ) -> None:
         super().__init__(parent)
         self._db = db
         self._config = config
+        self._theme = theme
         self._items = []
 
         layout = QVBoxLayout(self)
@@ -106,7 +111,7 @@ class WrongBookPanel(QWidget):
         parts: list[str] = []
         if due:
             parts.append(f"<h3>今天该复习（{len(due)} 道）</h3><ul>")
-            parts.extend(self._row(item, DUE_COLOR) for item in due)
+            parts.extend(self._row(item, self._theme.danger) for item in due)
             parts.append("</ul>")
 
         waiting = [item for item in self._items if not item.due and not item.mastered]
@@ -118,20 +123,24 @@ class WrongBookPanel(QWidget):
         mastered = [item for item in self._items if item.mastered]
         if mastered:
             parts.append(f"<h3>已掌握（{len(mastered)} 道）</h3><ul>")
-            parts.extend(self._row(item, DONE_COLOR) for item in mastered)
+            parts.extend(self._row(item, self._theme.muted) for item in mastered)
             parts.append("</ul>")
 
         return "".join(parts)
 
-    @staticmethod
-    def _row(item, color: str = "") -> str:
-        """一道题一行。带个"这个我会了"的链接，点了就移出错题本。"""
+    def _row(self, item, color: str = "") -> str:
+        """一道题一行。带个"这个我会了"的链接，点了就移出错题本。
+
+        **链接颜色得自己写**：HTML 里的 `<a>` 不受 QSS 管，用 Qt 默认的那个蓝
+        在深色底上几乎看不见。
+        """
         style = f' style="color:{color}"' if color else ""
         stem = _escape(_shorten(item.question.question, 60))
         return (
             f"<li{style}>{stem}<br>"
-            f'<small>{_escape(item.describe())}　'
-            f'<a href="remove:{item.question_id}">这个我会了</a></small></li>'
+            f"<small>{_escape(item.describe())}　"
+            f'<a href="remove:{item.question_id}" '
+            f'style="color:{self._theme.accent}">这个我会了</a></small></li>'
         )
 
     # ---------- 交互 ----------

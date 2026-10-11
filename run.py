@@ -73,15 +73,20 @@ def main() -> int:
 
     from cstudy.ui import rendering
     from cstudy.ui.main_window import MainWindow
+    from cstudy.ui.theme import load_appearance
 
     app = QApplication(sys.argv)
     app.setApplicationName(str(config.get("app.name", "C语言备考助手")))
     _apply_fonts(app, config, QFont, rendering)
 
-    window = MainWindow(config, db)
+    # 主题在 app 级设一次就全局生效（QSS），不用挨个控件设颜色
+    appearance = load_appearance(config)
+    app.setStyleSheet(appearance.theme.stylesheet())
+
+    window = MainWindow(config, db, appearance)
     window.show()
 
-    log.info("界面已启动")
+    log.info("界面已启动（主题：%s）", appearance.theme.name)
     return app.exec()
 
 

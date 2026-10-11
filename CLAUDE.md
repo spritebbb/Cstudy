@@ -68,6 +68,18 @@
 （关键帧抽帧、AI 看图识别 PPT、考纲覆盖度统计、真题组卷、错题本与遗忘曲线、
 编程题 gcc 编译验证，全部已完成。）
 
+**界面外观全在 `config.yaml` 的 `ui:` 段**（字体、主题、配色、背景图）：
+
+- 字体：界面微软雅黑 11pt / 代码 Consolas 12pt。改完看 HTML 里写进去的
+  `font-family` 不算数，要用 `QTextDocument.setHtml()` 读 `charFormat().fontFamilies()`
+  确认 Qt 真的认（踩过 `style='...'Consolas'...'` 单引号套单引号、属性被截断）。
+- 主题：深色（默认）/ 亮色，配色可逐个覆盖（`ui.theme.accent` 等），
+  支持背景图（`ui.theme.background_image` + `background_dim` 控制压暗）。
+  样式表在 `ui/theme.py` 一处生成，不在各控件里设颜色。
+- **面板里的 HTML 用色不能写死**：`<span style="color:...">` 不受 QSS 管，
+  写死的深红在深色底上几乎看不见。面板都接一个 `theme` 参数，
+  用 `theme.danger` / `theme.accent`。
+
 **界面上的六个 tab**：进度 / 笔记 / 答题 / 考纲 / 错题本 / 学情。
 答题页的「从题库挑题」（按题型/章节/来源筛，或随机抽 N 道）、
 「组一套真题」（按考试分值比例从题库抽，不调 AI）、

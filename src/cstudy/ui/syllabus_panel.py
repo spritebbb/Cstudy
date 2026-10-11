@@ -10,19 +10,18 @@ from PyQt6.QtWidgets import QLabel, QTextBrowser, QVBoxLayout, QWidget
 
 from ..db import Database
 from ..logging_setup import get_logger
+from .theme import DARK, Theme
 
 log = get_logger(__name__)
-
-# 题数为 0 时的高亮色。用偏暗的红，深色浅色主题下都看得清。
-EMPTY_COLOR = "#c0392b"
 
 
 class SyllabusPanel(QWidget):
     """按考纲章节列出每个知识点有多少道题。"""
 
-    def __init__(self, db: Database, parent: QWidget | None = None) -> None:
+    def __init__(self, db: Database, parent: QWidget | None = None, theme: Theme = DARK) -> None:
         super().__init__(parent)
         self._db = db
+        self._theme = theme
 
         layout = QVBoxLayout(self)
 
@@ -75,7 +74,7 @@ class SyllabusPanel(QWidget):
                 parts.append(f"<li>{_escape(row['name'])} — <b>{count}</b> 道</li>")
             else:
                 parts.append(
-                    f'<li><span style="color:{EMPTY_COLOR}">'
+                    f'<li><span style="color:{self._theme.danger}">'
                     f"{_escape(row['name'])} — 还没有题</span></li>"
                 )
         if chapter is not None:

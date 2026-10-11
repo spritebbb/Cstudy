@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBo
 from ..db import Database
 from ..logging_setup import get_logger
 from ..stats import by_exam_type, by_week, overview
+from .theme import DARK, Theme
 
 log = get_logger(__name__)
 
@@ -21,9 +22,10 @@ WEAK_ACCURACY = 60
 class StatsPanel(QWidget):
     """做题趋势和分题型正确率。"""
 
-    def __init__(self, db: Database, parent: QWidget | None = None) -> None:
+    def __init__(self, db: Database, parent: QWidget | None = None, theme: Theme = DARK) -> None:
         super().__init__(parent)
         self._db = db
+        self._theme = theme
 
         layout = QVBoxLayout(self)
 
@@ -103,7 +105,7 @@ class StatsPanel(QWidget):
                     )
                 elif tally.accuracy < WEAK_ACCURACY:
                     parts.append(
-                        f'<li><span style="color:#c0392b">{_escape(name)}：'
+                        f'<li><span style="color:{self._theme.danger}">{_escape(name)}：'
                         f"{tally.describe()} ← 这是短板，多练这块</span></li>"
                     )
                 else:

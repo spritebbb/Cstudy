@@ -15,6 +15,28 @@ ui:
   mono_family: "Consolas"
   mono_size: 12
 
+  # 主题。默认深色——读代码和长文字比亮色省眼。
+  theme:
+    # dark（深色）或 light（亮色）
+    mode: dark
+
+    # 背景图。填图片路径就有壁纸，留空就是纯色。
+    # 会等比放大铺满窗口、居中裁切，上面压一层暗色让字看得清。
+    background_image: ""
+
+    # 背景图压多暗（0~1）。越大字越清楚、图越看不见。
+    # 0.7 是"图看得出是什么、字也读得清"的位置；想要图更明显就调小。
+    background_dim: 0.7
+
+    # 想微调配色就填这些（#rrggbb）。留空用该模式的默认值。
+    accent: ""      # 强调色：选中的页签、主要按钮
+    bg: ""          # 最底层
+    surface: ""     # 面板
+    field: ""       # 输入框、代码框
+    border: ""
+    text: ""
+    muted: ""       # 次要文字
+
 paths:
   database: data/cstudy.db
   notes: notes

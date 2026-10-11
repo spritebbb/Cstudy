@@ -33,6 +33,7 @@ from ..logging_setup import get_logger
 from ..models import Question
 from ..runner import RunResult, run_c_code
 from .rendering import material_html
+from .theme import DARK, Theme
 
 log = get_logger(__name__)
 
@@ -80,9 +81,12 @@ class QuizPanel(QWidget):
     status_changed = pyqtSignal(str)
     load_all_requested = pyqtSignal()
 
-    def __init__(self, db: Database, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, db: Database, parent: QWidget | None = None, theme: Theme = DARK
+    ) -> None:
         super().__init__(parent)
         self.db = db
+        self._theme = theme
         self._items: list[QuizItem] = []
         self._index = 0
         self._answered = False   # 当前这题是否已经提交过
@@ -426,9 +430,13 @@ class QuizPanel(QWidget):
 
         parts: list[str] = []
         if auto is True:
-            parts.append("<h3 style='color:#1e8449; margin:4px 0;'>✅ 答对了</h3>")
+            parts.append(
+                f"<h3 style='color:{self._theme.ok}; margin:4px 0;'>✅ 答对了</h3>"
+            )
         elif auto is False:
-            parts.append("<h3 style='color:#c0392b; margin:4px 0;'>❌ 答错了</h3>")
+            parts.append(
+                f"<h3 style='color:{self._theme.danger}; margin:4px 0;'>❌ 答错了</h3>"
+            )
         if extra:
             parts.append(f"<p>{escape(extra)}</p>")
 
