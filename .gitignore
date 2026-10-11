@@ -11,6 +11,7 @@ venv/
 
 # ===== 运行时数据（含个人登录态和答题记录，不进仓库）=====
 data/cstudy.db
+data/backups/
 data/cookies/
 data/audio/
 data/frames/

@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -18,6 +19,30 @@ from .models import Question, exam_type_for
 from .subtitle import Segment, render
 
 log = get_logger(__name__)
+
+
+def parse_db_time(value) -> datetime | None:
+    """把数据库里的时间戳读成**本地时间**。读不出来返回 None。
+
+    **SQLite 的 CURRENT_TIMESTAMP 是 UTC**，而界面上显示、跟"现在"比都是本地时间。
+    直接拿来用会差好几个小时（东八区差 8 小时）——错题本的"该复习了"会算错，
+    按周统计进度也会把周界划错。所以凡是要用时间戳的地方都走这里。
+
+    （这个坑在 `answers.answered_at`、`wrong_questions.last_wrong_at`、
+    `notes.created_at` 上都存在。）
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d"):
+        try:
+            naive = datetime.strptime(str(value), fmt)
+        except ValueError:
+            continue
+        return naive.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+    log.warning("时间戳解析不了：%r", value)
+    return None
 
 SCHEMA_FILE = Path(__file__).resolve().parent / "schema.sql"
 
@@ -117,6 +142,64 @@ class Database:
         log.info("已给 %d 道题补上考试题型", len(updates))
         return len(updates)
 
+    # ---------- 备份 ----------
+
+    # 留几份带日期的备份。一天一份，保留最近这些天。
+    BACKUP_KEEP = 14
+
+    def backup(self, keep: int | None = None) -> Path | None:
+        """把数据库复制一份带日期的备份，返回备份路径；今天备过就返回 None。
+
+        **这个库里唯一不可再生的东西是用户自己的作答记录和错题本**。
+        题目丢了能用 scripts/import_bank.py 重导，学习轨迹丢了就真没了——
+        而它现在躺在单个文件里，没有任何保护。
+
+        用 SQLite 自己的 backup API，不是直接复制文件：直接复制有可能拿到
+        "复制到一半"的库（写操作进行中），备份出来是坏的。
+        """
+        if not self.path.exists():
+            return None   # 全新的库，还没东西可备
+
+        backup_dir = self.path.parent / "backups"
+        today = datetime.now().strftime("%Y-%m-%d")
+        target = backup_dir / f"cstudy-{today}.db"
+        if target.exists():
+            return None   # 今天已经备过了
+
+        keep = self.BACKUP_KEEP if keep is None else keep
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            dest = sqlite3.connect(target)
+            try:
+                with dest:
+                    self.conn.backup(dest)
+            finally:
+                dest.close()
+        except (OSError, sqlite3.Error) as exc:
+            # 备份失败不该拦住用户用软件
+            log.warning("数据库备份失败（%s），这次跳过", exc)
+            return None
+
+        log.info("数据库已备份：%s", target.name)
+        self._prune_backups(backup_dir, keep)
+        return target
+
+    @staticmethod
+    def _prune_backups(backup_dir: Path, keep: int) -> None:
+        """只留最近 keep 份，老的删掉——不然一天一份攒一年。"""
+        if keep <= 0:
+            return
+        try:
+            existing = sorted(backup_dir.glob("cstudy-*.db"))
+        except OSError:
+            return
+        for stale in existing[:-keep]:
+            try:
+                stale.unlink()
+                log.debug("删掉旧备份：%s", stale.name)
+            except OSError:
+                log.debug("删旧备份失败：%s", stale, exc_info=True)
+
     # ---------- 视频 ----------
 
     def upsert_video(
@@ -197,6 +280,30 @@ class Database:
         return self.conn.execute(
             "SELECT id, title, created_at, file_path FROM notes ORDER BY id DESC LIMIT ?",
             (limit,),
+        ).fetchall()
+
+    def search_notes(self, query: str = "", limit: int = 200) -> list[sqlite3.Row]:
+        """搜笔记。**标题和正文都搜**——用户记不住"哪一集讲过位运算"，
+        但记得住"位运算"这个词。
+
+        不传 query 就是列出最近几篇。
+        """
+        text = (query or "").strip()
+        if not text:
+            return self.conn.execute(
+                "SELECT id, title, created_at, file_path FROM notes "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
+        like = f"%{text}%"
+        return self.conn.execute(
+            """
+            SELECT id, title, created_at, file_path FROM notes
+            WHERE title LIKE ? OR content LIKE ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (like, like, limit),
         ).fetchall()
 
     def get_note(self, note_id: int) -> sqlite3.Row | None:

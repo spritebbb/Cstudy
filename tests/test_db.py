@@ -410,3 +410,88 @@ class TestExamType:
 
         assert db.backfill_exam_types() == 0
         assert db.query_questions()[0]["exam_type"] == "code_fill"
+
+
+class TestBackup:
+    """数据库备份——**库里唯一不可再生的是用户的作答记录和错题本**。
+
+    题目丢了能用脚本重导，学习轨迹丢了就真没了，而它躺在单个文件里没有任何保护。
+    """
+
+    def test_creates_a_dated_backup(self, db: Database):
+        path = db.backup()
+
+        assert path is not None and path.exists()
+        assert path.name.startswith("cstudy-") and path.name.endswith(".db")
+
+    def test_skips_when_today_is_already_backed_up(self, db: Database):
+        """一天备一次就够，每次启动都备会把硬盘塞满。"""
+        assert db.backup() is not None
+        assert db.backup() is None
+
+    def test_backup_is_a_readable_database(self, db: Database):
+        """备份出来得能打开、内容对——不然备了个寂寞。"""
+        db.save_questions([Question(type="fill", question="甲", answer="1")])
+
+        path = db.backup()
+        copy = Database(path)
+
+        assert copy.count("questions") == 1
+
+    def test_keeps_only_the_newest_few(self, db: Database):
+        """老备份要清掉，不然一天一份攒一年。"""
+        backup_dir = db.path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for day in range(1, 6):
+            (backup_dir / f"cstudy-2026-01-0{day}.db").write_bytes(b"x")
+
+        db.backup(keep=3)
+
+        remaining = sorted(p.name for p in backup_dir.glob("cstudy-*.db"))
+        assert len(remaining) == 3, f"应该只留 3 份，实际 {remaining}"
+
+    def test_missing_database_is_not_an_error(self, tmp_path: Path):
+        """全新的库还没文件可备，不该报错。"""
+        fresh = Database(tmp_path / "还没建过.db")
+
+        assert fresh.backup() is None
+
+
+class TestSearchNotes:
+    def note(self, db: Database, title: str, content: str) -> int:
+        video_id = db.upsert_video(f"BV{title}", 1, title, "url", 100)
+        return db.save_note(video_id=video_id, title=title, content=content)
+
+    def test_lists_recent_notes_without_a_query(self, db: Database):
+        self.note(db, "第一集", "讲变量")
+        self.note(db, "第二集", "讲循环")
+
+        assert len(db.search_notes()) == 2
+
+    def test_searches_the_title(self, db: Database):
+        self.note(db, "位运算入门", "内容是别的")
+        self.note(db, "循环结构", "内容是别的")
+
+        found = db.search_notes("位运算")
+
+        assert [row["title"] for row in found] == ["位运算入门"]
+
+    def test_searches_the_body_too(self, db: Database):
+        """用户记不住"哪一集讲过位运算"，只记得住"位运算"这个词——
+        所以正文必须一起搜。"""
+        self.note(db, "第七集", "这节课讲位运算和移位")
+        self.note(db, "第八集", "这节课讲文件操作")
+
+        found = db.search_notes("移位")
+
+        assert [row["title"] for row in found] == ["第七集"]
+
+    def test_no_match_returns_nothing(self, db: Database):
+        self.note(db, "第一集", "讲变量")
+
+        assert db.search_notes("绝对搜不到的词") == []
+
+    def test_empty_query_is_treated_as_no_filter(self, db: Database):
+        self.note(db, "第一集", "讲变量")
+
+        assert len(db.search_notes("   ")) == 1

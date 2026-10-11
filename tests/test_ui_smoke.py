@@ -26,6 +26,8 @@ from cstudy.db import Database  # noqa: E402
 from cstudy.models import Question  # noqa: E402
 from cstudy.ui import rendering  # noqa: E402
 from cstudy.ui.filter_dialog import FilterDialog  # noqa: E402
+from cstudy.ui.notes_panel import NotesPanel  # noqa: E402
+from cstudy.ui.stats_panel import StatsPanel  # noqa: E402
 from cstudy.ui.quiz_panel import QuizPanel  # noqa: E402
 from cstudy.ui.rendering import material_html  # noqa: E402
 from cstudy.ui.syllabus_panel import SyllabusPanel  # noqa: E402
@@ -382,3 +384,85 @@ class TestRunBox:
 
         assert panel._run_worker is None, "不该起线程"
         assert warned and "代码" in warned[0]
+
+
+class TestNotesPanel:
+    """笔记页：能搜、能翻。
+
+    原来只能显示"刚生成的那一篇"，关掉软件就只能去 notes/ 文件夹翻 .md 了。
+    """
+
+    def seed(self, db: Database, title: str, content: str) -> None:
+        video_id = db.upsert_video(f"BV{title}", 1, title, "url", 100)
+        db.save_note(video_id=video_id, title=title, content=content)
+
+    def test_empty_state_is_friendly(self, qapp, db: Database):
+        panel = NotesPanel(db)
+
+        assert "还没有笔记" in panel.count_label.text()
+
+    def test_lists_the_notes_it_finds(self, qapp, db: Database):
+        self.seed(db, "第七集", "讲位运算")
+        self.seed(db, "第八集", "讲文件")
+
+        panel = NotesPanel(db)
+
+        assert panel.note_list.count() == 2
+        assert "找到 2 篇" in panel.count_label.text()
+
+    def test_search_filters_the_list(self, qapp, db: Database):
+        self.seed(db, "第七集", "这节课讲位运算")
+        self.seed(db, "第八集", "这节课讲文件")
+
+        panel = NotesPanel(db)
+        panel.search_edit.setText("位运算")
+
+        assert panel.note_list.count() == 1
+
+    def test_search_with_no_hits_says_so(self, qapp, db: Database):
+        self.seed(db, "第七集", "讲位运算")
+
+        panel = NotesPanel(db)
+        panel.search_edit.setText("搜不到的词")
+
+        assert "没搜到" in panel.count_label.text()
+
+    def test_picking_a_note_shows_its_content(self, qapp, db: Database):
+        self.seed(db, "第七集", "# 这一集讲位运算")
+
+        panel = NotesPanel(db)
+
+        assert "位运算" in panel.content_view.toPlainText()
+
+    def test_show_note_displays_a_freshly_generated_one(self, qapp, db: Database):
+        panel = NotesPanel(db)
+
+        panel.show_note("# 刚生成的\n讲 for 循环")
+
+        assert "for 循环" in panel.content_view.toPlainText()
+
+
+class TestStatsPanel:
+    def test_empty_state_points_at_where_to_start(self, qapp, db: Database):
+        panel = StatsPanel(db)
+
+        assert "还没做过题" in panel.summary_label.text()
+        assert "从题库挑题" in panel.browser.toPlainText()
+
+    def test_shows_the_running_total(self, qapp, db: Database):
+        question_id = db.save_questions([Question(type="fill", question="甲", answer="1")])[0]
+        db.record_answer(question_id, "1", is_correct=True)
+
+        panel = StatsPanel(db)
+
+        assert "累计做过 1 道" in panel.summary_label.text()
+        assert "正确率 100%" in panel.summary_label.text()
+
+    def test_breaks_down_by_exam_type(self, qapp, db: Database):
+        """分题型看比只看总分有用——总分 70% 可能掩盖「程序填空只有 30%」。"""
+        question_id = db.save_questions([Question(type="fill", question="甲", answer="1")])[0]
+        db.record_answer(question_id, "1", is_correct=True)
+
+        panel = StatsPanel(db)
+
+        assert "填空题" in panel.browser.toPlainText()

@@ -23,7 +23,6 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QTabWidget,
-    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -37,7 +36,9 @@ from ..pipeline import LoadedVideo, NoteResult, QuizResult, StudyPipeline
 from .filter_dialog import FilterDialog
 from .import_dialog import ImportDialog
 from .login_dialog import LoginDialog
+from .notes_panel import NotesPanel
 from .quiz_panel import QuizPanel
+from .stats_panel import StatsPanel
 from .syllabus_panel import SyllabusPanel
 from .workers import TaskWorker, friendly_error
 from .wrong_book_panel import WrongBookPanel
@@ -122,9 +123,8 @@ class MainWindow(QMainWindow):
         self.progress_view.setReadOnly(True)
         self.tabs.addTab(self.progress_view, "进度")
 
-        self.note_view = QTextBrowser()
-        self.note_view.setOpenExternalLinks(True)
-        self.tabs.addTab(self.note_view, "笔记")
+        self.notes_panel = NotesPanel(self.db)
+        self.tabs.addTab(self.notes_panel, "笔记")
 
         # 答题区。判分和展示都在 QuizPanel 里，主窗口只负责把题喂给它。
         self.quiz_panel = QuizPanel(self.db)
@@ -140,6 +140,10 @@ class MainWindow(QMainWindow):
         self.wrong_book_panel = WrongBookPanel(self.db, self.config)
         self.wrong_book_panel.review_requested.connect(self._on_review_wrong)
         self.tabs.addTab(self.wrong_book_panel, "错题本")
+
+        # 学情：这几周练得怎么样。备考六个月，看趋势比看单次分数重要。
+        self.stats_panel = StatsPanel(self.db)
+        self.tabs.addTab(self.stats_panel, "学情")
 
         # 切到某个 tab 时顺手刷新它——省得用户看到过期数据
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -236,8 +240,8 @@ class MainWindow(QMainWindow):
 
     def _on_notes_done(self, note: NoteResult) -> None:
         self._note = note
-        self.note_view.setMarkdown(note.body)
-        self.tabs.setCurrentWidget(self.note_view)
+        self.notes_panel.show_note(note.body)
+        self.tabs.setCurrentWidget(self.notes_panel)
         self._set_status(f"笔记已生成：{note.path.name}")
         self._log_review(note.review)
         self._refresh_buttons()
@@ -344,12 +348,16 @@ class MainWindow(QMainWindow):
         self._set_status(f"从错题本拿了 {len(questions)} 道题来复习")
 
     def _on_tab_changed(self, index: int) -> None:
-        """切到某个 tab 时刷新它——错题本和考纲都会随做题/导入变化。"""
+        """切到某个 tab 时刷新它——做题、导入都会让这些页的数据变化。"""
         widget = self.tabs.widget(index)
         if widget is self.wrong_book_panel:
             self.wrong_book_panel.refresh()
         elif widget is self.syllabus_panel:
             self.syllabus_panel.refresh()
+        elif widget is self.stats_panel:
+            self.stats_panel.refresh()
+        elif widget is self.notes_panel:
+            self.notes_panel.refresh()
 
     # ---------- 辅助操作 ----------
 

@@ -56,6 +56,13 @@ def main() -> int:
         _fatal("数据库初始化失败", f"{exc}\n\n数据库路径：{config.path('database')}")
         return 1
 
+    # 顺手备份一份。库里唯一不可再生的是用户的作答记录和错题本，
+    # 题目丢了能重导，学习轨迹丢了就真没了。一天备一次，失败也不拦着用。
+    try:
+        db.backup()
+    except Exception:
+        log.warning("数据库备份出意外，跳过", exc_info=True)
+
     missing = describe_missing_tools()
     if missing:
         log.warning("缺少外部工具：%s（只有需要语音转写时才会用到）", "、".join(missing))

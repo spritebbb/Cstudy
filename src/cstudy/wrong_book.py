@@ -11,10 +11,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from .config import Config
-from .db import Database
+from .db import Database, parse_db_time
 from .logging_setup import get_logger
 from .models import Question
 
@@ -104,24 +104,8 @@ def interval_days(wrong_count: int, intervals: tuple[int, ...] = DEFAULT_INTERVA
 
 
 def _parse_time(value) -> datetime | None:
-    """SQLite 的时间戳是字符串，解析不了就当没有——不该因为一条坏数据崩掉。
-
-    **SQLite 的 CURRENT_TIMESTAMP 是 UTC**，而界面上显示、跟"现在"比都是本地时间。
-    这里统一转成本地时间再往外传，否则「该复习了」会差好几个小时，
-    显示的"最近错于"也会对不上用户表。
-    """
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d"):
-        try:
-            naive = datetime.strptime(str(value), fmt)
-        except ValueError:
-            continue
-        return naive.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
-    log.warning("时间戳解析不了：%r", value)
-    return None
+    """读数据库时间戳。实现在 `db.parse_db_time`——progress 统计也用同一份。"""
+    return parse_db_time(value)
 
 
 def _consecutive_correct(db: Database) -> dict[int, int]:
