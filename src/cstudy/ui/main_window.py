@@ -35,6 +35,7 @@ from ..models import Question, ReviewReport
 from ..pipeline import LoadedVideo, NoteResult, QuizResult, StudyPipeline
 from .background import BackgroundWidget
 from .filter_dialog import FilterDialog
+from .graph_panel import KnowledgeGraphPanel
 from .import_dialog import ImportDialog
 from .login_dialog import LoginDialog
 from .notes_panel import NotesPanel
@@ -143,6 +144,15 @@ class MainWindow(QMainWindow):
         self.syllabus_panel = SyllabusPanel(self.db, theme=self.appearance.theme)
         self.tabs.addTab(self.syllabus_panel, "考纲")
 
+        # 知识图谱：把考纲的知识点画成一张网——题量、我的正确率、知识点之间的关系。
+        # 它调 AI 找关系，所以要把 client 传进去（跟导入题库一个路子）。
+        self.graph_panel = KnowledgeGraphPanel(
+            self.db, self.config, self.pipeline.client, theme=self.appearance.theme
+        )
+        self.graph_panel.practice_requested.connect(self._on_practice_point)
+        self.graph_panel.status_changed.connect(self._set_status)
+        self.tabs.addTab(self.graph_panel, "知识图谱")
+
         # 错题本：错过的题 + 今天该复习哪几道。
         self.wrong_book_panel = WrongBookPanel(self.db, self.config, theme=self.appearance.theme)
         self.wrong_book_panel.review_requested.connect(self._on_review_wrong)
@@ -196,6 +206,9 @@ class MainWindow(QMainWindow):
         # 题目数变了，考纲覆盖度也跟着变。放这儿是为了让"哪次导入/出题之后忘了刷新"
         # 这种问题不可能发生——凡是要更新统计的地方，覆盖度一定一起更新。
         self.syllabus_panel.refresh()
+        # 知识图谱也一样：题目数和答题正确率都会进这张图。
+        # 图谱自己会判断"结构变了才重排"，所以这里调它不会让图跳位置。
+        self.graph_panel.refresh()
 
     # ---------- 后台任务通用入口 ----------
 
@@ -354,6 +367,32 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.quiz_panel)
         self._set_status(f"从错题本拿了 {len(questions)} 道题来复习")
 
+    def _on_practice_point(self, point_id: int) -> None:
+        """知识图谱里点「只练这个知识点」——把这个知识点的题捞出来进答题区。
+
+        用的就是筛选刷题那套（`query_questions(point_ids=...)`），
+        只是条件由图上点哪个决定，用户不用再去弹窗里选一遍。
+        """
+        try:
+            rows = self.db.query_questions(point_ids=[point_id])
+        except Exception:
+            log.exception("按知识点读题目失败")
+            QMessageBox.warning(
+                self, "读不出来", "读题目时出了点问题，详细原因在 logs/cstudy.log。"
+            )
+            return
+
+        questions, question_ids = self._to_questions(rows)
+        if not questions:
+            QMessageBox.information(
+                self, "这个知识点还没题", "它现在还一道题都没有，先用补题脚本补一批。"
+            )
+            return
+
+        self.quiz_panel.load(questions, question_ids)
+        self.tabs.setCurrentWidget(self.quiz_panel)
+        self._set_status(f"从知识图谱拿了 {len(questions)} 道题来练")
+
     def _on_tab_changed(self, index: int) -> None:
         """切到某个 tab 时刷新它——做题、导入都会让这些页的数据变化。"""
         widget = self.tabs.widget(index)
@@ -361,6 +400,8 @@ class MainWindow(QMainWindow):
             self.wrong_book_panel.refresh()
         elif widget is self.syllabus_panel:
             self.syllabus_panel.refresh()
+        elif widget is self.graph_panel:
+            self.graph_panel.refresh()
         elif widget is self.stats_panel:
             self.stats_panel.refresh()
         elif widget is self.notes_panel:

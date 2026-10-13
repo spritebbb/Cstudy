@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from pathlib import Path
@@ -18,15 +19,19 @@ import pytest  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from PyQt6.QtCore import QUrl  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtCore import Qt, QUrl  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
 
+from cstudy.ai.relations import RelationProposal  # noqa: E402
 from cstudy.config import Config  # noqa: E402
 from cstudy.db import Database  # noqa: E402
+from cstudy.graph import MIN_GAP  # noqa: E402
 from cstudy.models import Question  # noqa: E402
 from cstudy.ui import rendering  # noqa: E402
 from cstudy.ui.filter_dialog import FilterDialog  # noqa: E402
+from cstudy.ui.graph_panel import KnowledgeGraphPanel  # noqa: E402
 from cstudy.ui.notes_panel import NotesPanel  # noqa: E402
+from cstudy.ui.relation_dialog import RelationDialog  # noqa: E402
 from cstudy.ui.stats_panel import StatsPanel  # noqa: E402
 from cstudy.ui.quiz_panel import QuizPanel  # noqa: E402
 from cstudy.ui.rendering import material_html  # noqa: E402
@@ -466,3 +471,653 @@ class TestStatsPanel:
         panel = StatsPanel(db)
 
         assert "填空题" in panel.browser.toPlainText()
+
+
+# ---------- 知识图谱 ----------
+
+
+@pytest.fixture
+def graphed(db: Database) -> Database:
+    """两个章、三个知识点、几道题、一条确认过的关系——够画一张小图。"""
+    pointer = db.upsert_syllabus_point("指针变量", "第8章", 1)
+    array = db.upsert_syllabus_point("用指针处理数组", "第8章", 2)
+    loop = db.upsert_syllabus_point("while 循环", "第5章", 3)
+    ids = db.save_questions(
+        [Question(type="fill", question=f"题{i}", answer="1", point_id=pointer) for i in range(4)]
+        + [Question(type="coding", question="写个程序", answer="1", point_id=array)]
+    )
+    db.save_relations(
+        [{"from_id": pointer, "to_id": array, "kind": "prereq",
+          "reason": "得先懂指针才能用指针处理数组", "origin": "ai"}]
+    )
+    # 两道错的、一道对的——做满 3 道才会被算成"偏弱"，见 graph.MIN_SAMPLE
+    db.record_answer(ids[0], "0", is_correct=False)
+    db.record_answer(ids[1], "0", is_correct=False)
+    db.record_answer(ids[2], "1", is_correct=True)
+    return db
+
+
+def graph_config() -> Config:
+    return Config({"graph": {}, "paths": {}}, Path("."))
+
+
+class TestKnowledgeGraphPanel:
+    def test_constructs_without_a_syllabus(self, qapp, db: Database):
+        panel = KnowledgeGraphPanel(db, graph_config())
+
+        assert "还没有考纲" in panel.summary_label.text()
+        assert "seed_syllabus" in panel.detail.toPlainText()
+
+    def test_draws_a_node_for_every_point(self, qapp, graphed: Database):
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+
+        assert len(panel._nodes) == 3
+        assert "3 个知识点" in panel.summary_label.text()
+
+    def test_the_summary_says_the_colours_are_all_grey_before_any_practice(self, qapp, db: Database):
+        """现在库里只有 1 条作答记录，整张图是灰的。**必须说出来**，
+        不然用户会以为"薄弱区"这个功能坏了。"""
+        db.upsert_syllabus_point("指针", "第8章", 1)
+
+        panel = KnowledgeGraphPanel(db, graph_config())
+
+        assert "颜色还都是灰的" in panel.summary_label.text()
+
+    def test_the_summary_reports_questions_that_are_not_linked(self, qapp, graphed: Database):
+        """图里画不出来的题必须报数，否则用户以为这张图就是全部题库。"""
+        graphed.save_questions([Question(type="fill", question="没挂的", answer="1")])
+
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+
+        assert "1 道题没挂到知识点上" in panel.summary_label.text()
+
+    def test_clicking_a_node_fills_the_detail_pane(self, qapp, graphed: Database):
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+
+        panel._on_node_clicked(panel._data.nodes[0].id)
+
+        text = panel.detail.toPlainText()
+        assert "指针变量" in text
+        assert "共 4 道" in text
+        assert "偏弱" in text               # 3 道里对 1 道 = 33%
+        assert "先学这个" in text
+
+    def test_the_detail_pane_offers_to_practise_just_that_point(self, qapp, graphed: Database):
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        panel._on_node_clicked(panel._data.nodes[0].id)
+
+        assert "practice:" in panel.detail.toHtml()
+
+    def test_the_detail_pane_offers_to_delete_each_relation(self, qapp, graphed: Database):
+        """AI 提的关系难免有不准的，用户得能自己在图上纠掉。"""
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        panel._on_node_clicked(panel._data.nodes[0].id)
+
+        assert "del:" in panel.detail.toHtml()
+
+    def test_deleting_a_relation_from_the_pane_takes_it_out_of_the_database(
+        self, qapp, graphed: Database
+    ):
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        edge_id = graphed.list_relations()[0]["id"]
+
+        panel._on_anchor(QUrl(f"del:{edge_id}"))
+
+        assert graphed.list_relations() == []
+        assert panel.summary_label.text().count("还没有任何关系") == 1
+
+    def test_practising_emits_the_point_id(self, qapp, graphed: Database):
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        seen: list[int] = []
+        panel.practice_requested.connect(seen.append)
+        point_id = panel._data.nodes[0].id
+
+        panel._on_anchor(QUrl(f"practice:{point_id}"))
+
+        assert seen == [point_id]
+
+    def test_a_broken_link_does_not_blow_up(self, qapp, graphed: Database):
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+
+        panel._on_anchor(QUrl("del:不是数字"))
+        panel._on_anchor(QUrl("practice:"))
+        panel._on_anchor(QUrl("别的什么"))
+
+        assert graphed.list_relations() != []      # 什么都没动
+
+    def test_the_legend_uses_the_theme_not_hardcoded_colours(self, qapp, graphed: Database):
+        """面板里的 HTML 颜色**不受 QSS 管**——写死的深红在深色底上几乎看不见。
+        （错题本、考纲、学情三处都踩过这个坑。）"""
+        from cstudy.ui.theme import DARK
+
+        panel = KnowledgeGraphPanel(graphed, graph_config(), theme=DARK)
+
+        html = panel._legend_html()
+        assert DARK.danger in html
+        assert DARK.ok in html
+        assert "先学这个" in html
+
+    def test_refreshing_after_a_change_keeps_the_node_positions(self, qapp, graphed: Database):
+        """题量变了不该让整张图跳位置——用户正对着看呢。"""
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        before = dict(panel._positions)
+
+        graphed.save_questions([Question(type="fill", question="新题", answer="1")])
+        panel.refresh()
+
+        assert panel._positions == before
+
+    def test_relayout_actually_moves_things(self, qapp, graphed: Database):
+        """**「重新排布」不能是个空按钮。**
+
+        布局是确定性的（同一份数据永远算出一样的位置，这是"位置稳定"那条设计），
+        所以按原来的种子重排等于什么都没做——用户点了没反应会以为按钮坏了。
+        换个种子才真的动。
+        """
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        before = dict(panel._positions)
+
+        panel._on_relayout()
+
+        assert panel._positions != before
+        # 换完还是同一批点、还是不许叠在一起
+        assert set(panel._positions) == set(before)
+        ids = list(before)
+        closest = min(
+            math.dist(panel._positions[a], panel._positions[b])
+            for index, a in enumerate(ids)
+            for b in ids[index + 1:]
+        )
+        assert closest >= MIN_GAP - 1e-9
+
+    def test_every_node_and_name_actually_lands_in_the_scene(self, qapp, graphed: Database):
+        """**这条盯的是一个真踩过的坑**：名字算了一堆位置、忘了 `scene.addItem`，
+        测试全绿、界面上一个字都没有。所以得数一数场景里真有东西。"""
+        from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsSimpleTextItem
+
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+
+        ellipses = [i for i in panel.scene.items() if isinstance(i, QGraphicsEllipseItem)]
+        texts = [i for i in panel.scene.items() if isinstance(i, QGraphicsSimpleTextItem)]
+
+        assert len(ellipses) == len(panel._data.nodes)
+        # 每个知识点一个名字，外加每个章一个章名
+        assert len(texts) == len(panel._data.nodes) + len(panel._data.by_chapter())
+
+    def test_the_edges_and_their_arrows_land_in_the_scene(self, qapp, graphed: Database):
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+
+        assert len(panel._edge_items) == len(panel._data.edges)
+        # 夹具里唯一那条关系是「先学这个」，所以应该正好一个箭头
+        assert len(panel._arrow_items) == 1
+
+    def test_clicking_a_line_asks_first_and_then_deletes_it(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        """图例上写了"点连线可以删掉它"，那就**必须真的能删**——
+        第一版图例这么写，实际点上去什么都不会发生。"""
+        from cstudy.ui import graph_panel as module
+
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        edge = panel._data.edges[0]
+        asked: list[str] = []
+        monkeypatch.setattr(
+            module.QMessageBox,
+            "question",
+            lambda *args, **kwargs: (
+                asked.append(str(args[2])),
+                module.QMessageBox.StandardButton.Yes,
+            )[1],
+        )
+
+        panel._on_edge_clicked(edge)
+
+        assert asked and "删掉" in asked[0]
+        assert graphed.list_relations() == []
+
+    def test_saying_no_to_the_question_keeps_the_relation(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        """线细又挨着别的东西，点错很正常——所以必须问一遍。"""
+        from cstudy.ui import graph_panel as module
+
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        monkeypatch.setattr(
+            module.QMessageBox,
+            "question",
+            lambda *args, **kwargs: module.QMessageBox.StandardButton.No,
+        )
+
+        panel._on_edge_clicked(panel._data.edges[0])
+
+        assert len(graphed.list_relations()) == 1
+
+    def test_finding_relations_without_a_client_warns_instead_of_crashing(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        from cstudy.ui import graph_panel
+
+        warned: list[str] = []
+        monkeypatch.setattr(
+            graph_panel.QMessageBox,
+            "warning",
+            lambda *args, **kwargs: warned.append(str(args[-1])),
+        )
+        panel = KnowledgeGraphPanel(graphed, graph_config(), client=None)
+
+        panel._on_find_relations()
+
+        assert warned and "AI" in warned[0]
+
+    def test_an_empty_graph_is_not_drawn(self, qapp, db: Database):
+        panel = KnowledgeGraphPanel(db, graph_config())
+
+        assert panel._nodes == {}
+
+    def test_a_selection_that_disappeared_does_not_dim_the_whole_graph(
+        self, qapp, graphed: Database
+    ):
+        """选中的知识点没了（软件开着的时候重灌了考纲）时，
+        **不能把整张图淡成一片黑**——"高亮的那个"找不到的话，
+        所有点都会被算成"跟它无关"。"""
+        panel = KnowledgeGraphPanel(graphed, graph_config())
+        point_id = panel._data.nodes[0].id
+        panel._on_node_clicked(point_id)
+        graphed.conn.execute("DELETE FROM syllabus_points WHERE id = ?", (point_id,))
+        graphed.conn.commit()
+
+        panel.refresh()
+
+        assert panel._selected is None
+        assert all(item.brush().color().alpha() == 255 for item in panel._nodes.values())
+
+
+class TestRelationDialog:
+    """**勾上的才入库**——这是 AI 说的话能不能进库的唯一关口。"""
+
+    def _dialog(self, db: Database, proposals=None) -> RelationDialog:
+        db.upsert_syllabus_point("指针变量", "第8章", 1)
+        db.upsert_syllabus_point("用指针处理数组", "第8章", 2)
+        return RelationDialog(db, proposals=proposals or [], parent=None)
+
+    def _proposal(self, from_name: str = "指针变量", to_name: str = "用指针处理数组"):
+        from cstudy.ai.relations import ProposedRelation
+
+        return ProposedRelation(
+            from_name=from_name, to_name=to_name, kind="prereq", reason="有先后"
+        )
+
+    def test_constructs_with_nothing_to_show(self, qapp, db: Database):
+        dialog = self._dialog(db)
+
+        assert "还没有任何关系" in dialog.list.item(0).text()
+
+    def test_a_proposal_is_checked_and_approved_by_default(self, qapp, db: Database):
+        dialog = self._dialog(db, [self._proposal()])
+
+        assert [r.from_name for r in dialog.approved()] == ["指针变量"]
+
+    def test_unchecking_a_proposal_drops_it(self, qapp, db: Database):
+        dialog = self._dialog(db, [self._proposal()])
+
+        dialog.list.item(1).setCheckState(Qt.CheckState.Unchecked)   # 第 0 项是分组标题
+
+        assert dialog.approved() == []
+
+    def test_the_reason_is_shown_next_to_each_row(self, qapp, db: Database):
+        """光看到"A 和 B 有关系"判断不了对不对。"""
+        dialog = self._dialog(db, [self._proposal()])
+
+        assert "理由：有先后" in dialog.list.item(1).text()
+
+    def test_an_existing_relation_is_checked_and_unchecking_means_delete(
+        self, qapp, db: Database
+    ):
+        left = db.upsert_syllabus_point("甲", "第1章", 1)
+        right = db.upsert_syllabus_point("乙", "第2章", 2)
+        db.save_relations(
+            [{"from_id": left, "to_id": right, "kind": "related", "reason": "有关"}]
+        )
+        dialog = RelationDialog(db, proposals=[], parent=None)
+        edge_id = int(db.list_relations()[0]["id"])
+
+        assert dialog.removed_ids() == []           # 默认是保留
+
+        dialog.list.item(1).setCheckState(Qt.CheckState.Unchecked)
+
+        assert dialog.removed_ids() == [edge_id]
+        assert dialog.approved() == []              # 已有的不算"新增"
+
+    def test_adding_one_by_hand_needs_a_reason(self, qapp, db: Database):
+        dialog = self._dialog(db)
+        dialog.to_combo.setCurrentIndex(1)      # 选一个不一样的，别撞上"自己连自己"
+
+        dialog._on_add()
+
+        assert "理由" in dialog.summary_label.text()
+        assert dialog.approved() == []
+
+    def test_adding_one_by_hand_refuses_a_self_loop(self, qapp, db: Database):
+        dialog = self._dialog(db)
+        dialog.reason_edit.setText("随便写个理由")
+
+        dialog._on_add()          # 两个下拉框默认都停在第一个知识点上
+
+        assert "同一个" in dialog.summary_label.text()
+        assert dialog.approved() == []
+
+    def test_adding_one_by_hand_marks_it_as_manual(self, qapp, db: Database):
+        dialog = self._dialog(db)
+        dialog.to_combo.setCurrentIndex(1)
+        dialog.reason_edit.setText("老师的讲义里放在一起讲的")
+
+        dialog._on_add()
+
+        relation = dialog.approved()[0]
+        assert relation.origin == "manual"
+        assert "自己加的" in dialog.list.item(1).text()
+
+    def test_the_summary_counts_what_will_happen(self, qapp, db: Database):
+        dialog = self._dialog(db, [self._proposal(), self._proposal("甲", "乙")])
+
+        assert "新增 2 条" in dialog.summary_label.text()
+
+    def test_the_dialog_writes_nothing_by_itself(self, qapp, db: Database):
+        """**点确定之前库里一条都不能多**——这个对话框只负责算，
+        写库由面板统一做。这样点取消就真的什么都没发生。"""
+        self._dialog(db, [self._proposal()])
+
+        assert db.list_relations() == []
+
+    def test_adding_one_by_hand_refuses_a_duplicate(self, qapp, db: Database):
+        """库里已有 A↔B 时，手加 B↔A 不能存成第二条。
+        「容易混」和「相关」是不分方向的，数据库的 UNIQUE 只看方向，挡不住。"""
+        left = db.upsert_syllabus_point("甲", "第1章", 1)
+        right = db.upsert_syllabus_point("乙", "第2章", 2)
+        db.save_relations(
+            [{"from_id": left, "to_id": right, "kind": "confuse", "reason": "容易混"}]
+        )
+        dialog = RelationDialog(db, proposals=[], parent=None)
+        # 类型选「容易混」——不分方向的那种才存在"反着写"的问题
+        dialog.kind_combo.setCurrentIndex(
+            [dialog.kind_combo.itemData(i) for i in range(dialog.kind_combo.count())].index("confuse")
+        )
+        dialog.reason_edit.setText("反着再说一遍")
+        # 两个下拉框按名字顺序排：把 from/to 反过来选
+        dialog.from_combo.setCurrentIndex(1)
+        dialog.to_combo.setCurrentIndex(0)
+
+        dialog._on_add()
+
+        assert "已经有了" in dialog.summary_label.text()
+        assert dialog.approved() == []
+
+    def test_adding_one_by_hand_refuses_the_same_thing_twice_in_a_row(
+        self, qapp, db: Database
+    ):
+        dialog = self._dialog(db)
+        dialog.to_combo.setCurrentIndex(1)
+        dialog.reason_edit.setText("老师的讲义里放在一起讲的")
+        dialog._on_add()
+
+        dialog.reason_edit.setText("手滑又加了一遍")
+        dialog._on_add()
+
+        assert len(dialog.approved()) == 1
+        assert "已经有了" in dialog.summary_label.text()
+
+    def test_the_dropped_and_the_corrected_are_shown_under_separate_headings(
+        self, qapp, db: Database
+    ):
+        """认回名字的那几条**是列进来了的**，跟"没列进来"混在一个标题底下，
+        用户会以为它没被采纳，然后在列表里白找。"""
+        db.upsert_syllabus_point("甲", "第1章", 1)
+        db.upsert_syllabus_point("乙", "第2章", 2)
+
+        dialog = RelationDialog(
+            db,
+            proposals=[self._proposal("甲", "乙")],
+            dropped=["「丙丁」在考纲里找不到，整条丢掉"],
+            corrected=["AI 把「甲 」写岔了，按考纲里的「甲」认了"],
+            parent=None,
+        )
+
+        texts = [label.text() for label in dialog.findChildren(QLabel)]
+        joined = "\n".join(texts)
+        assert "按考纲里最接近的那个认了" in joined
+        assert "没有列进来" in joined
+        # 两块提示是分开的两个控件，不是一个
+        assert sum(1 for t in texts if "丙丁" in t or "写岔了" in t) == 2
+
+    def test_no_notice_when_there_is_nothing_to_report(self, qapp, db: Database):
+        db.upsert_syllabus_point("甲", "第1章", 1)
+        db.upsert_syllabus_point("乙", "第2章", 2)
+
+        dialog = RelationDialog(db, proposals=[self._proposal("甲", "乙")], parent=None)
+
+        joined = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        assert "没有列进来" not in joined
+
+
+class TestApplyingRelationChanges:
+    """**勾上的才入库**这条规则的落地处。
+
+    对话框只负责算，写库在面板里做（`_apply_and_report`）。这一段最容易
+    出错的地方是"一条写不进去就把整批都丢了"——那用户得在几十条里重勾一遍。
+
+    （注意 `graphed` 夹具里本来就有一条关系，所以断言都看"变了多少条"，
+    不是看总数。）
+    """
+
+    def _panel(self, db: Database) -> KnowledgeGraphPanel:
+        return KnowledgeGraphPanel(db, graph_config())
+
+    def _proposal(self, *pairs):
+        from cstudy.ai.relations import ProposedRelation
+
+        return RelationProposal(
+            relations=[
+                ProposedRelation(a, b, kind, f"{a} 和 {b} 的关系")
+                for a, b, kind in pairs
+            ]
+        )
+
+    # 夹具里已确认的是「指针变量 →用指针处理数组」，这两对都不会跟它撞
+    def _fresh_pairs(self):
+        return (
+            ("指针变量", "while 循环", "related"),
+            ("while 循环", "用指针处理数组", "confuse"),
+        )
+
+    def _pairs_in(self, db: Database) -> set[tuple[str, str, str]]:
+        return {
+            (str(row["from_name"]), str(row["to_name"]), str(row["kind"]))
+            for row in db.list_relations()
+        }
+
+    def test_only_checked_proposals_get_saved(self, qapp, graphed: Database, monkeypatch):
+        from cstudy.ui import graph_panel as module
+
+        panel = self._panel(graphed)
+        before = self._pairs_in(graphed)
+
+        def accept(dialog):
+            dialog.list.item(2).setCheckState(Qt.CheckState.Unchecked)  # 第 0 项是分组标题
+            return 1
+
+        monkeypatch.setattr(module.RelationDialog, "exec", accept)
+
+        panel._on_proposal(self._proposal(*self._fresh_pairs()))
+
+        added = self._pairs_in(graphed) - before
+        assert added == {("指针变量", "while 循环", "related")}
+
+    def test_saved_relations_are_marked_as_coming_from_ai(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        """是 AI 提的还是自己敲的，得分开记——用户要知道哪条该多留个心眼。"""
+        from cstudy.ui import graph_panel as module
+
+        panel = self._panel(graphed)
+        monkeypatch.setattr(module.RelationDialog, "exec", lambda dialog: 1)
+
+        panel._on_proposal(self._proposal(("指针变量", "while 循环", "related")))
+
+        row = next(
+            row for row in graphed.list_relations() if row["to_name"] == "while 循环"
+        )
+        assert row["origin"] == "ai"
+
+    def test_unchecking_existing_relations_deletes_them(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        from cstudy.ui import graph_panel as module
+        from cstudy.ui.relation_dialog import ROLE_EXISTING_ID
+
+        panel = self._panel(graphed)
+        assert graphed.list_relations()          # 夹具里有一条，下面要验证它被删掉
+
+        def uncheck_everything(dialog):
+            for index in range(dialog.list.count()):
+                item = dialog.list.item(index)
+                if item.data(ROLE_EXISTING_ID) is not None:
+                    item.setCheckState(Qt.CheckState.Unchecked)
+            return 1
+
+        monkeypatch.setattr(module.RelationDialog, "exec", uncheck_everything)
+
+        panel._on_manage_relations()
+
+        assert graphed.list_relations() == []
+
+    def test_one_relation_failing_does_not_lose_the_others(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        """写一条失败就把整批丢掉的话，用户得在几十条里重勾一遍——
+        所以每条单独 try，并且如实报出有几条没写进去。"""
+        from cstudy.ui import graph_panel as module
+
+        panel = self._panel(graphed)
+        before = self._pairs_in(graphed)
+        monkeypatch.setattr(module.RelationDialog, "exec", lambda dialog: 1)
+        status: list[str] = []
+        panel.status_changed.connect(status.append)
+
+        real_save = graphed.save_relations
+        calls = {"n": 0}
+
+        def flaky(payload):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("模拟写库失败")
+            return real_save(payload)
+
+        monkeypatch.setattr(graphed, "save_relations", flaky)
+
+        panel._on_proposal(self._proposal(*self._fresh_pairs()))
+
+        assert len(self._pairs_in(graphed) - before) == 1     # 第二条还是写进去了
+        assert status and "没写进去" in status[-1]
+
+    def test_a_relation_naming_an_unknown_point_is_not_silently_saved(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        """名字对不上就抛，让上层记日志——不能硬塞一个错的 id 进去，
+        那会连出一条谁也说不清的关系。"""
+        from cstudy.ui import graph_panel as module
+
+        panel = self._panel(graphed)
+        before = self._pairs_in(graphed)
+        monkeypatch.setattr(module.RelationDialog, "exec", lambda dialog: 1)
+
+        panel._on_proposal(
+            self._proposal(("考纲里没有的知识点", "指针变量", "related"))
+        )
+
+        assert self._pairs_in(graphed) == before
+
+
+class TestMainWindowGraphWiring:
+    """主窗口把知识图谱接进来了没有。
+
+    **这类"接错了"的问题构造时不报错**——tab 忘了加、信号忘了连，
+    都可能一路跑到用户手上才发现。而签收标准恰恰是"点一下能不能用"，
+    所以这几条得测。
+    """
+
+    def _window(self, db: Database):
+        from cstudy.ui.main_window import MainWindow
+        from cstudy.ui.theme import load_appearance
+
+        config = Config({"ui": {}, "quiz": {}, "paths": {}}, Path("."))
+        return MainWindow(config, db, load_appearance(config))
+
+    def _point_with_questions(self, db: Database) -> int:
+        row = db.conn.execute(
+            "SELECT point_id FROM questions WHERE point_id IS NOT NULL LIMIT 1"
+        ).fetchone()
+        return int(row["point_id"])
+
+    def test_the_graph_has_its_own_tab(self, qapp, graphed: Database):
+        window = self._window(graphed)
+
+        names = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+
+        assert "知识图谱" in names
+        assert window.tabs.currentWidget() is not None
+
+    def test_practising_from_the_graph_lands_in_the_quiz_page(self, qapp, graphed: Database):
+        window = self._window(graphed)
+
+        window._on_practice_point(self._point_with_questions(graphed))
+
+        assert window.tabs.currentWidget() is window.quiz_panel
+        assert "知识图谱" in window.status_label.text()
+
+    def test_the_quiz_page_actually_received_questions(self, qapp, graphed: Database):
+        """状态栏说"拿了 N 道"不算数——题得**真的出现在答题页上**。"""
+        window = self._window(graphed)
+
+        window._on_practice_point(self._point_with_questions(graphed))
+
+        assert window.quiz_panel.question_view.toPlainText().strip()
+
+    def test_a_point_without_questions_says_so_instead_of_opening_an_empty_page(
+        self, qapp, graphed: Database, monkeypatch
+    ):
+        """考纲里有知识点一道题都没有（补题之前就是这样），
+        点了不该打开一个空白的答题页让用户对着发呆。"""
+        from cstudy.ui import main_window as module
+
+        told: list[str] = []
+        monkeypatch.setattr(
+            module.QMessageBox,
+            "information",
+            lambda *args, **kwargs: told.append(str(args[-1])),
+        )
+        window = self._window(graphed)
+        empty = graphed.upsert_syllabus_point("还没出题的知识点", "第1章", 99)
+        window.graph_panel.refresh()
+
+        window._on_practice_point(empty)
+
+        assert told and "一道题都没有" in told[0]
+        assert window.tabs.currentWidget() is not window.quiz_panel
+
+    def test_switching_to_the_graph_tab_refreshes_it(self, qapp, graphed: Database):
+        """切过去要重算——刚做完题，圆圈的颜色和大小得跟着变。"""
+        window = self._window(graphed)
+        point_id = self._point_with_questions(graphed)
+        before = next(
+            node for node in window.graph_panel._data.nodes if node.id == point_id
+        ).question_count
+        graphed.save_questions(
+            [Question(type="fill", question="新加的题", answer="1", point_id=point_id)]
+        )
+
+        window.tabs.setCurrentWidget(window.graph_panel)
+
+        after = next(
+            node for node in window.graph_panel._data.nodes if node.id == point_id
+        ).question_count
+        assert after == before + 1

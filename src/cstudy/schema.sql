@@ -98,7 +98,32 @@ CREATE TABLE IF NOT EXISTS wrong_questions (
     FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
 );
 
+-- ============ 知识点之间的关系（知识图谱的"连线"）============
+--
+-- 章节归属和教材顺序是**算出来的**，不存这张表——那张图每次都能重新画出来，
+-- 存下来反而会在换考纲之后变成一堆对不上的旧数据。
+--
+-- 这张表只存**推不出来的那部分**：AI 说"先学 A 才学得懂 B""A 和 B 容易混"，
+-- 以及用户自己手动加的关系。这些是判断，不是事实，所以：
+--   · 只存**用户确认过**的（AI 抽出来但没勾选的不入库）
+--   · 每条必须带一句理由，界面上要看得见——不然没法复核
+--   · origin 记下是 AI 抽的还是手动加的，让用户知道该信几分
+CREATE TABLE IF NOT EXISTS point_edges (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL,
+    to_id      INTEGER NOT NULL,
+    kind       TEXT    NOT NULL,                  -- prereq 先学 / confuse 易混 / related 相关
+    reason     TEXT,                              -- 为什么连这条线（AI 给的一句话，或用户自己写的）
+    origin     TEXT    NOT NULL DEFAULT 'ai',     -- ai / manual
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (from_id, to_id, kind),
+    FOREIGN KEY (from_id) REFERENCES syllabus_points(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_id)   REFERENCES syllabus_points(id) ON DELETE CASCADE
+);
+
 -- ============ 索引 ============
+CREATE INDEX IF NOT EXISTS idx_point_edges_from   ON point_edges(from_id);
+CREATE INDEX IF NOT EXISTS idx_point_edges_to     ON point_edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_subtitles_video    ON subtitles(video_id);
 CREATE INDEX IF NOT EXISTS idx_notes_video        ON notes(video_id);
 CREATE INDEX IF NOT EXISTS idx_questions_note     ON questions(note_id);

@@ -515,6 +515,114 @@ class Database:
                 changed += int(cur.rowcount or 0)
         return changed
 
+    # ---------- 知识点关系（知识图谱的连线）----------
+
+    def save_relations(self, relations: list[dict[str, Any]]) -> int:
+        """存一批关系，返回**真正新存进去的**条数。
+
+        **只存用户确认过的**——AI 抽出来但没勾选的一律不入库，
+        所以这个函数不需要知道"哪些是被否掉的"。
+
+        同一个 (from, to, kind) 重复存会走 `INSERT OR IGNORE` 跳过，
+        所以同一个关系反复确认也不会翻倍。
+        """
+        if not relations:
+            return 0
+        changed = 0
+        with self.tx() as conn:
+            for rel in relations:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO point_edges
+                        (from_id, to_id, kind, reason, origin)
+                    VALUES (:from_id, :to_id, :kind, :reason, :origin)
+                    """,
+                    {
+                        "from_id": int(rel["from_id"]),
+                        "to_id": int(rel["to_id"]),
+                        "kind": str(rel["kind"]),
+                        "reason": str(rel.get("reason") or ""),
+                        "origin": str(rel.get("origin") or "ai"),
+                    },
+                )
+                # 被 IGNORE 掉的重复项 rowcount 是 0，不计数
+                changed += max(0, int(cur.rowcount))
+        return changed
+
+    def list_relations(self) -> list[sqlite3.Row]:
+        """所有已确认的关系，带两端的知识点名字。
+
+        **用 INNER JOIN 是有意的**：两端有一端对不上（知识点没了）的行就查不出来。
+        正常也造不出这种行——外键是 `ON DELETE CASCADE`，删知识点会把连线一起带走；
+        只有绕开外键手工删（`PRAGMA foreign_keys=OFF`）才会留下孤儿。
+        真出现了也宁可它不出现，而不是返回一条名字是空的、界面上没法看的行。
+
+        图上的连线数和状态栏的"知识关系"数**走同一套过滤**（见 `stats()`），
+        不然会出现"状态栏说 54 条、图上只画了 52 条"这种对不上又没法查的情况。
+        """
+        return self.conn.execute(
+            """
+            SELECT e.id, e.from_id, e.to_id, e.kind, e.reason, e.origin,
+                   a.name AS from_name, b.name AS to_name
+            FROM point_edges e
+            JOIN syllabus_points a ON a.id = e.from_id
+            JOIN syllabus_points b ON b.id = e.to_id
+            ORDER BY e.kind, a.sort_order, a.id, b.sort_order, b.id
+            """
+        ).fetchall()
+
+    def delete_relation(self, edge_id: int) -> bool:
+        """删掉一条关系。删到了返回 True，本来就不在返回 False。"""
+        with self.tx() as conn:
+            cur = conn.execute("DELETE FROM point_edges WHERE id = ?", (int(edge_id),))
+        return bool(cur.rowcount)
+
+    def point_stats(self) -> list[sqlite3.Row]:
+        """每个知识点的题量和作答情况——画知识图谱的"节点"用。
+
+        四个数都用**子查询**算，不用 JOIN 再 GROUP BY：一个知识点挂了 300 道题、
+        其中 20 道做过，JOIN 三次会把行数乘起来，算出来的是错的。
+        **四个数都要返回，包括 0**——用户要看的就是"哪儿还没练到"。
+
+        `answered` / `correct` 数的是**作答次数**（跟学情页同一个口径）；
+        `distinct` 数的是练过几道**不同的**题。两个都要，因为同一道题反复做
+        三遍是一道题，不是三道——而界面上要同时说清"做过多少次"和"覆盖几道题"，
+        不然节点详情会一边显示"共 4 道"一边显示"做过 8 道"。
+        """
+        return self.conn.execute(
+            """
+            SELECT sp.id, sp.name, sp.chapter, sp.sort_order,
+                   (SELECT COUNT(*) FROM questions q WHERE q.point_id = sp.id)
+                       AS question_count,
+                   (SELECT COUNT(*) FROM answers a
+                      JOIN questions q ON q.id = a.question_id
+                     WHERE q.point_id = sp.id)
+                       AS answered,
+                   (SELECT COUNT(*) FROM answers a
+                      JOIN questions q ON q.id = a.question_id
+                     WHERE q.point_id = sp.id AND a.is_correct = 1)
+                       AS correct,
+                   (SELECT COUNT(DISTINCT a.question_id) FROM answers a
+                      JOIN questions q ON q.id = a.question_id
+                     WHERE q.point_id = sp.id)
+                       AS distinct_questions
+            FROM syllabus_points sp
+            ORDER BY sp.sort_order, sp.id
+            """
+        ).fetchall()
+
+    def exam_types_of_point(self, point_id: int) -> dict[str, int]:
+        """某个知识点考过哪些题型、各几道。点开节点时显示用。"""
+        rows = self.conn.execute(
+            """
+            SELECT COALESCE(NULLIF(exam_type, ''), type) AS kind, COUNT(*) AS n
+            FROM questions WHERE point_id = ?
+            GROUP BY kind ORDER BY n DESC
+            """,
+            (int(point_id),),
+        ).fetchall()
+        return {str(row["kind"]): int(row["n"]) for row in rows}
+
     # ---------- 统计 ----------
 
     def count(self, table: str) -> int:
@@ -522,6 +630,7 @@ class Database:
         allowed = {
             "videos", "subtitles", "notes", "questions",
             "answers", "wrong_questions", "syllabus_points", "note_points",
+            "point_edges",
         }
         if table not in allowed:
             raise ValueError(f"不认识的表名：{table}")
@@ -535,4 +644,17 @@ class Database:
             "笔记": self.count("notes"),
             "题目": self.count("questions"),
             "考纲知识点": self.count("syllabus_points"),
+            # 走跟 `list_relations()` 同一套 JOIN：这样状态栏这个数
+            # **永远等于图上能画出来的线数**。两个数各算各的，
+            # 迟早会出现"状态栏说 54 条、图上只画了 52 条"的情况，
+            # 而用户没有任何办法查清楚差在哪（孤儿行在图上是隐形的）。
+            "知识关系": int(
+                self.conn.execute(
+                    """
+                    SELECT COUNT(*) FROM point_edges e
+                    JOIN syllabus_points a ON a.id = e.from_id
+                    JOIN syllabus_points b ON b.id = e.to_id
+                    """
+                ).fetchone()[0]
+            ),
         }

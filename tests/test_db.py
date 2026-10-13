@@ -151,8 +151,111 @@ class TestNotes:
 class TestStats:
     def test_stats_shape(self, db: Database):
         stats = db.stats()
-        assert set(stats) == {"视频", "字幕", "笔记", "题目", "考纲知识点"}
+        assert set(stats) == {"视频", "字幕", "笔记", "题目", "考纲知识点", "知识关系"}
         assert all(v == 0 for v in stats.values())
+
+    def test_relation_count_shows_up_in_the_stats(self, db: Database):
+        """状态栏那几个数要能看出关系存进去了没有——它是"确认过"的证据。"""
+        left = db.upsert_syllabus_point("甲", "第1章", 1)
+        right = db.upsert_syllabus_point("乙", "第2章", 2)
+        db.save_relations(
+            [{"from_id": left, "to_id": right, "kind": "prereq", "reason": "先甲后乙"}]
+        )
+
+        assert db.stats()["知识关系"] == 1
+
+
+class TestPointRelations:
+    """知识点关系（知识图谱的连线）的存取。
+
+    这一层是"用户确认过的东西"的落脚点，**不能悄悄吞掉也不能悄悄重复**：
+    用户勾了 12 条，库里就得是 12 条；再勾一遍还得是 12 条。
+    """
+
+    def _two_points(self, db: Database) -> tuple[int, int]:
+        return (
+            db.upsert_syllabus_point("break 与 continue", "第5章", 1),
+            db.upsert_syllabus_point("switch 语句", "第4章", 2),
+        )
+
+    def test_saves_and_reads_back_with_both_names(self, db: Database):
+        left, right = self._two_points(db)
+
+        added = db.save_relations(
+            [{"from_id": left, "to_id": right, "kind": "confuse",
+              "reason": "都用来跳出，考试爱放在一起考", "origin": "ai"}]
+        )
+
+        rows = db.list_relations()
+        assert added == 1
+        assert len(rows) == 1
+        assert rows[0]["from_name"] == "break 与 continue"
+        assert rows[0]["to_name"] == "switch 语句"
+        assert rows[0]["origin"] == "ai"
+
+    def test_the_same_relation_twice_does_not_double_up(self, db: Database):
+        """同一个关系反复确认不该翻倍——不然用户手抖点两次，图上就两条线。"""
+        left, right = self._two_points(db)
+        payload = [{"from_id": left, "to_id": right, "kind": "confuse", "reason": "容易混"}]
+
+        assert db.save_relations(payload) == 1
+        assert db.save_relations(payload) == 0
+        assert len(db.list_relations()) == 1
+
+    def test_the_reverse_direction_is_a_different_relation(self, db: Database):
+        """前置关系是有方向的：A→B 和 B→A 是两码事，不能当成重复吞掉。"""
+        left, right = self._two_points(db)
+        db.save_relations(
+            [{"from_id": left, "to_id": right, "kind": "prereq", "reason": "先左后右"}]
+        )
+
+        assert db.save_relations(
+            [{"from_id": right, "to_id": left, "kind": "prereq", "reason": "反过来"}]
+        ) == 1
+
+    def test_deleting_reports_whether_it_hit_anything(self, db: Database):
+        left, right = self._two_points(db)
+        db.save_relations(
+            [{"from_id": left, "to_id": right, "kind": "related", "reason": "有关"}]
+        )
+        edge_id = int(db.list_relations()[0]["id"])
+
+        assert db.delete_relation(edge_id) is True
+        assert db.delete_relation(edge_id) is False
+        assert db.list_relations() == []
+
+    def test_deleting_a_point_takes_its_relations_with_it(self, db: Database):
+        """换考纲会清掉知识点。留下的连线必须一起走——
+        不然下次打开图谱会读到一堆指向虚无的关系。"""
+        left, right = self._two_points(db)
+        db.save_relations(
+            [{"from_id": left, "to_id": right, "kind": "related", "reason": "有关"}]
+        )
+
+        db.conn.execute("DELETE FROM syllabus_points WHERE id = ?", (right,))
+        db.conn.commit()
+
+        assert db.list_relations() == []
+
+    def test_saving_nothing_is_a_noop(self, db: Database):
+        assert db.save_relations([]) == 0
+
+    def test_exam_types_of_a_point(self, db: Database):
+        point_id = db.upsert_syllabus_point("指针", "第8章", 1)
+        db.save_questions(
+            [Question(type="coding", question=f"编程{i}", answer="1", point_id=point_id)
+             for i in range(2)]
+        )
+        db.save_questions(
+            [Question(type="fill", question="求值 ___", answer="1", point_id=point_id)]
+        )
+
+        kinds = db.exam_types_of_point(point_id)
+
+        assert kinds == {"coding": 2, "fill": 1}
+
+    def test_exam_types_of_an_unknown_point_is_empty(self, db: Database):
+        assert db.exam_types_of_point(999) == {}
 
 
 class TestAnswerRecording:

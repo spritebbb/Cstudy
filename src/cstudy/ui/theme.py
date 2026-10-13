@@ -135,6 +135,16 @@ QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
     border-color: {self.accent};
 }}
 
+/* ---------- 知识图谱的画布 ---------- */
+/* 这里**只给边框和圆角**，底色由面板自己 `setBackgroundBrush` 设。
+   两边都设的话底色会叠两层——带透明度时叠出来几乎是全不透明的
+   （实测 0.88 叠两层 ≈ 98.6%），有背景图时那块图就透不过来了，
+   正好跟"面板半透明让图露出来"的初衷相反。 */
+QGraphicsView {{
+    border: 1px solid {self.border};
+    border-radius: 5px;
+}}
+
 /* ---------- 下拉框、列表（筛题对话框用）---------- */
 QComboBox {{
     background-color: {field};
