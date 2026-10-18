@@ -63,6 +63,22 @@ class TestPaths:
         assert (tmp_path / "data" / "cookies").is_dir()
         assert not (tmp_path / "data" / "cookies" / "bilibili.json").exists()
 
+    def test_temp_bank_is_optional(self, tmp_path: Path):
+        """「考前突击」那栏的库是可选配置——老配置文件里没有它也得能起来。"""
+        config = Config({"paths": {"database": "data/test.db"}}, tmp_path)
+
+        config.ensure_dirs()
+
+        assert (tmp_path / "data").is_dir()
+        assert not (tmp_path / "data" / "temp_bank").exists()
+
+    def test_missing_hard_dependency_still_raises(self, tmp_path: Path):
+        """可选的只有 temp_bank；别的键缺了还是得报错，不能悄悄跳过。"""
+        config = Config({"paths": {"database": "data/test.db"}}, tmp_path)
+
+        with pytest.raises(ConfigError, match="缺少 paths.notes"):
+            config.path("notes")
+
 
 class TestApiKey:
     def test_missing_key_raises_readable_error(self, config: Config, monkeypatch):

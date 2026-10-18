@@ -3,7 +3,7 @@
 ## 这是什么 / 给谁用
 
 一个只在本机运行的 Windows 桌面软件，把 B 站 C 语言课程视频自动变成**学习笔记**和**练习题**，
-用于专升本 C 语言备考。**使用者只有我一个人。**
+个人自用的 C 语言学习工具，把课程视频自动变成笔记和练习题。
 
 ## 解决什么问题
 
@@ -79,6 +79,20 @@ python scripts/seed_syllabus.py
 # 6. 启动
 python run.py
 ```
+
+## 打包成免安装版（拷到别的电脑直接双击用）
+
+双击根目录的 **`打包软件.bat`**（或者 `.venv\Scripts\python.exe scripts\build_package.py --zip`），
+成品在 `dist\C语言备考助手\`：整个文件夹拷过去，双击里面的 `C语言备考助手.exe` 就行，
+**目标电脑不需要装 Python**。
+
+- 包里**不放** `.env`（DeepSeek 密钥），所以 AI 功能（生成笔记 / 出题 / 导入题库）在别的
+  电脑上要用得自己把 `.env` 拷进去；`config.yaml`、`.env.example` 会带上。
+- 包里会带「考前突击」那一栏的题库（`data\temp_bank\bank.db`），但**只带题目**，
+  作答记录和进度会被删掉。主库 `data\cstudy.db`（C 语言的题和你的学习记录）**不带**。
+- 包不大也不小（PyQt6 + whisper 那一套约几百 MB），首次打包要几分钟；
+  改完代码要重新打一次才会有新版本。打包用的 PyInstaller 只装在开发机的 `.venv` 里，
+  没有写进 `requirements.txt`。
 
 ## 目录说明
 

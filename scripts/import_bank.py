@@ -24,11 +24,8 @@ import argparse
 import base64
 import io
 import re
-import subprocess
 import sys
 import tempfile
-import zipfile
-from html import unescape
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -41,97 +38,24 @@ from cstudy.db import Database  # noqa: E402
 from cstudy.logging_setup import setup_logging  # noqa: E402
 from cstudy.models import DataError  # noqa: E402
 
-# LibreOffice 在标准安装位置。.doc（老式二进制 Word）只有它能读。
-SOFFICE = Path(r"C:\Program Files\LibreOffice\program\soffice.exe")
-
-SUPPORTED = {".pdf", ".docx", ".doc", ".txt", ".md"}
-SKIP_SUFFIXES = {".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".png", ".zip", ".rar"}
-
-# 抽出来不到这么多字，基本就是扫描件或空文件——OCR 是另一个量级的事，先跳过。
-MIN_CHARS = 200
-
 QUESTION_START = re.compile(r"^\s*\d{1,3}\s*[.、,，)）]", re.MULTILINE)
 
 
 # ---------- 各格式抽文字 ----------
-
-
-def pdf_text(path: Path) -> str:
-    """抽 PDF 文字。
-
-    **优先 pypdfium2**：同一份 PDF，pypdf 会把每个词甚至每个字符拆成一行
-    （"专升本\\nC\\n语言"），AI 得多花力气去拼；pypdfium2 抽出来是正常成行的。
-    字数是差不多的，差别全在可读性上。
-    """
-    try:
-        import pypdfium2 as pdfium
-
-        doc = pdfium.PdfDocument(str(path))
-        return "\n".join(page.get_textpage().get_text_range() for page in doc)
-    except ImportError:
-        pass
-    except Exception:
-        pass  # 少数加密 PDF 它读不了，退回 pypdf
-
-    from pypdf import PdfReader
-
-    reader = PdfReader(str(path))
-    if reader.is_encrypted:
-        # 题库 PDF 大多只设了"禁止编辑"的空密码，空串就能解开
-        reader.decrypt("")
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
-
-
-def docx_text(path: Path) -> str:
-    """docx 本质是个 zip，直接读里面的 document.xml，不用装 python-docx。"""
-    with zipfile.ZipFile(path) as archive:
-        xml = archive.read("word/document.xml").decode("utf-8", "ignore")
-    xml = re.sub(r"<w:p\b[^>]*>", "\n", xml)
-    xml = re.sub(r"<w:br\b[^>]*/?>", "\n", xml)
-    xml = re.sub(r"<[^>]+>", "", xml)
-    return unescape(xml)
-
-
-def doc_text(path: Path, workdir: Path) -> str:
-    """老式 .doc 交给 LibreOffice 转成 txt。"""
-    if not SOFFICE.exists():
-        raise RuntimeError(f"没找到 LibreOffice（{SOFFICE}），.doc 读不了")
-    # 单独给一个用户配置目录，免得跟用户开着的 LibreOffice 抢
-    profile = workdir / "lo-profile"
-    result = subprocess.run(
-        [
-            str(SOFFICE),
-            f"-env:UserInstallation=file:///{profile.as_posix()}",
-            "--headless",
-            "--convert-to",
-            "txt:Text (encoded):UTF8",
-            "--outdir",
-            str(workdir),
-            str(path),
-        ],
-        capture_output=True,
-        timeout=180,
-    )
-    converted = workdir / (path.stem + ".txt")
-    if not converted.exists():
-        detail = (result.stderr or b"").decode("utf-8", "ignore").strip()
-        raise RuntimeError(f"LibreOffice 转换失败：{detail[:200] or '没有输出文件'}")
-    text = converted.read_text("utf-8", "ignore")
-    converted.unlink()
-    return text
-
-
-def extract(path: Path, workdir: Path) -> str:
-    suffix = path.suffix.lower()
-    if suffix == ".pdf":
-        return pdf_text(path)
-    if suffix == ".docx":
-        return docx_text(path)
-    if suffix == ".doc":
-        return doc_text(path, workdir)
-    if suffix in {".txt", ".md"}:
-        return path.read_text("utf-8", "ignore")
-    raise RuntimeError(f"这种格式还没支持：{suffix}")
+#
+# 实现搬到了 `cstudy/file_text.py`——「考前突击」那栏也要按同样方式读文件，
+# 抄一份迟早会两边不一致。这里 import 回来，名字和签名都不变：
+# 脚本自己和 tests/test_import_bank.py 都还按原来的名字调。
+from cstudy.file_text import (  # noqa: E402,F401
+    MIN_CHARS,
+    SKIP_SUFFIXES,
+    SOFFICE,
+    SUPPORTED,
+    doc_text,
+    docx_text,
+    extract,
+    pdf_text,
+)
 
 
 # ---------- 扫描件 OCR ----------

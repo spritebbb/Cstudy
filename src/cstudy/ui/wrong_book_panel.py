@@ -22,7 +22,8 @@ from ..db import Database
 from ..logging_setup import get_logger
 from ..models import Question
 from ..wrong_book import due_items, intervals_from_config, list_wrong, master_after_from_config
-from .theme import DARK, Theme
+from .rendering import render_html, style_document
+from .theme import DARK, Theme, set_variant
 
 log = get_logger(__name__)
 
@@ -46,24 +47,31 @@ class WrongBookPanel(QWidget):
         self._items = []
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
         top = QHBoxLayout()
+        top.setSpacing(8)
         self.summary_label = QLabel("")
+        self.summary_label.setObjectName("pageTitle")
         self.summary_label.setWordWrap(True)
         top.addWidget(self.summary_label, stretch=1)
 
         self.review_button = QPushButton("复习今天该复习的")
         self.review_button.clicked.connect(self._on_review)
+        set_variant(self.review_button, "primary")
         top.addWidget(self.review_button)
 
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self.refresh)
+        set_variant(self.refresh_button, "ghost")
         top.addWidget(self.refresh_button)
         layout.addLayout(top)
 
         self.browser = QTextBrowser()
         self.browser.setOpenLinks(False)   # 链接自己处理，别去开浏览器
         self.browser.anchorClicked.connect(self._on_anchor)
+        style_document(self.browser, margin=18)
         layout.addWidget(self.browser, 1)
 
         self.refresh()
@@ -88,7 +96,7 @@ class WrongBookPanel(QWidget):
         active = [item for item in self._items if not item.mastered]
         self.summary_label.setText(self._summary(len(active), len(due), len(self._items)))
         self.review_button.setEnabled(bool(due))
-        self.browser.setHtml(self._render(due))
+        render_html(self.browser, self._render(due))
 
     @staticmethod
     def _summary(active: int, due: int, total: int) -> str:
@@ -102,45 +110,58 @@ class WrongBookPanel(QWidget):
         return f"还欠着 {active} 道，今天该复习 {due} 道。"
 
     def _render(self, due) -> str:
+        theme = self._theme
         if not self._items:
             return (
-                "<p>还没有错题。做题时答错的会自动记进来，"
+                f'<p style="color:{theme.muted};">还没有错题。做题时答错的会自动记进来，'
                 "隔一段时间提醒你再做一遍。</p>"
             )
 
         parts: list[str] = []
         if due:
-            parts.append(f"<h3>今天该复习（{len(due)} 道）</h3><ul>")
-            parts.extend(self._row(item, self._theme.danger) for item in due)
-            parts.append("</ul>")
+            parts.append(self._section(f"今天该复习（{len(due)} 道）", theme.danger))
+            parts.extend(self._row(item, theme.danger) for item in due)
 
         waiting = [item for item in self._items if not item.due and not item.mastered]
         if waiting:
-            parts.append(f"<h3>还没到复习时间（{len(waiting)} 道）</h3><ul>")
+            parts.append(self._section(f"还没到复习时间（{len(waiting)} 道）"))
             parts.extend(self._row(item) for item in waiting)
-            parts.append("</ul>")
 
         mastered = [item for item in self._items if item.mastered]
         if mastered:
-            parts.append(f"<h3>已掌握（{len(mastered)} 道）</h3><ul>")
-            parts.extend(self._row(item, self._theme.muted) for item in mastered)
-            parts.append("</ul>")
+            parts.append(self._section(f"已掌握（{len(mastered)} 道）"))
+            parts.extend(self._row(item, theme.muted) for item in mastered)
 
         return "".join(parts)
 
+    def _section(self, title: str, color: str = "") -> str:
+        """分组小标题。原来是 `<h3>`，和题干一样大，分不出层次。"""
+        color = color or self._theme.muted
+        return (
+            f'<p style="color:{color}; font-size:9.5pt; font-weight:600;'
+            f' margin:16px 0 6px 0;">{_escape(title)}</p>'
+        )
+
     def _row(self, item, color: str = "") -> str:
-        """一道题一行。带个"这个我会了"的链接，点了就移出错题本。
+        """一道题一段：题干 + 一行灰色小字（错了几次、下次什么时候、移出链接）。
 
         **链接颜色得自己写**：HTML 里的 `<a>` 不受 QSS 管，用 Qt 默认的那个蓝
         在深色底上几乎看不见。
+
+        每道题之间留 10px 间距，不用 `<li>`：Qt 的列表缩进和行距都得靠样式表管，
+        HTML 里调不动，挤成一坨。
         """
-        style = f' style="color:{color}"' if color else ""
-        stem = _escape(_shorten(item.question.question, 60))
+        theme = self._theme
+        stem_color = color or theme.text
+        stem = _escape(_shorten(item.question.question, 90))
         return (
-            f"<li{style}>{stem}<br>"
-            f"<small>{_escape(item.describe())}　"
+            '<p style="margin:0 0 10px 0;">'
+            f'<span style="color:{stem_color};">{stem}</span><br>'
+            f'<span style="color:{theme.muted}; font-size:9pt;">'
+            f"{_escape(item.describe())}　·　"
             f'<a href="remove:{item.question_id}" '
-            f'style="color:{self._theme.accent}">这个我会了</a></small></li>'
+            f'style="color:{theme.accent}; text-decoration:none;">这个我会了</a>'
+            "</span></p>"
         )
 
     # ---------- 交互 ----------

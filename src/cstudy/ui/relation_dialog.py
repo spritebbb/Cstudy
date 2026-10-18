@@ -140,14 +140,15 @@ class RelationDialog(QDialog):
     def _notice(self, title: str, lines: list[str]) -> QWidget:
         """对话框顶上那块"另外还有这些"的提示。最多列 8 条，剩下的指向日志。"""
         label = QLabel(
-            f"<small>{title}：<br>"
+            f"{title}：<br>"
             + "<br>".join(escape(line) for line in lines[:8])
             + (f"<br>…另外还有 {len(lines) - 8} 条，详见 logs/cstudy.log"
                if len(lines) > 8 else "")
-            + "</small>"
         )
         label.setWordWrap(True)
-        label.setStyleSheet(f"color: {self._theme.muted};")
+        # 用全局 QSS 的次要文字样式，不在这里写死颜色——
+        # 控件级 setStyleSheet 优先级更高，换主题时会跟不住。
+        label.setObjectName("pageHint")
         return label
 
     def _add_row(self) -> QWidget:

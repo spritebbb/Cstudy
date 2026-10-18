@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsLineItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
@@ -65,7 +66,8 @@ from ..graph import (
 from ..logging_setup import get_logger
 from ..models import EXAM_TYPE_LABELS
 from .relation_dialog import RelationDialog
-from .theme import DARK, Theme
+from .rendering import style_document
+from .theme import DARK, Theme, set_variant
 from .workers import TaskWorker, friendly_error
 
 log = get_logger(__name__)
@@ -73,11 +75,13 @@ log = get_logger(__name__)
 # 画布的虚拟边长。所有坐标、半径、字号都是"这个的几分之几"，见 graph.py。
 SCENE_SIZE = 1000.0
 
-# 知识点名字的标注字号（虚拟单位）。太大就会互相压住，太小看不清。
-LABEL_FONT_SIZE = 13
+# 知识点名字的标注字号（虚拟单位，**必须是整数**：`QFont.setPixelSize()` 不收 float）。
+# 太大就会互相压住，太小看不清。13 会压住邻居：同章的点间距约 195 个场景单位，
+# 13 号字 9 个字约 117 宽，左右各伸 58，两边的标注正好撞上。12 号 + 7 个字才留得下缝。
+LABEL_FONT_SIZE = 12
 # 标注最多显示几个字。考纲里有"预处理命令（#define 宏定义、#include 文件包含、条件编译）"
 # 这种超长名字，整条画出来得占满半个屏幕。
-LABEL_MAX_CHARS = 9
+LABEL_MAX_CHARS = 7
 
 # 连线在虚拟单位下的粗细
 EDGE_WIDTH = 2.4
@@ -261,30 +265,32 @@ class KnowledgeGraphPanel(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         top = QHBoxLayout()
-        self.summary_label = QLabel("")
-        self.summary_label.setWordWrap(True)
-        top.addWidget(self.summary_label, stretch=1)
+        top.setSpacing(8)
+        top.addWidget(self._legend(), stretch=1)
 
         self.find_button = QPushButton("让 AI 找关系")
         self.find_button.clicked.connect(self._on_find_relations)
-        top.addWidget(self.find_button)
+        top.addWidget(self.find_button, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.manage_button = QPushButton("手动加 / 删关系")
         self.manage_button.clicked.connect(self._on_manage_relations)
-        top.addWidget(self.manage_button)
+        set_variant(self.manage_button, "ghost")
+        top.addWidget(self.manage_button, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.relayout_button = QPushButton("重新排布")
         self.relayout_button.clicked.connect(self._on_relayout)
-        top.addWidget(self.relayout_button)
+        set_variant(self.relayout_button, "ghost")
+        top.addWidget(self.relayout_button, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self.refresh)
-        top.addWidget(self.refresh_button)
+        set_variant(self.refresh_button, "ghost")
+        top.addWidget(self.refresh_button, alignment=Qt.AlignmentFlag.AlignTop)
         root.addLayout(top)
-
-        root.addWidget(self._legend())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.scene = QGraphicsScene()
@@ -298,12 +304,21 @@ class KnowledgeGraphPanel(QWidget):
         self.detail = QTextBrowser()
         self.detail.setOpenLinks(False)
         self.detail.anchorClicked.connect(self._on_anchor)
+        style_document(self.detail, margin=16)
         splitter.addWidget(self.detail)
         # 图占大头。详情区给一个够读的宽度就行，不跟图抢地方。
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([600, 400])
         root.addWidget(splitter, stretch=1)
+
+        # 统计文案放在图的下面：它信息量大但优先级低，顶在上面会把图挤扁，
+        # 而这张页签打开就是为了看图。
+        self.summary_label = QLabel("")
+        self.summary_label.setObjectName("pageHint")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setTextFormat(Qt.TextFormat.RichText)
+        root.addWidget(self.summary_label)
 
     def _canvas_brush(self) -> QBrush:
         """画布底色：跟别的面板同一个色和同一个透明度。
@@ -339,10 +354,12 @@ class KnowledgeGraphPanel(QWidget):
             f"{edge_mark(kind)}</span> {escape(name)}"
             for kind, name in RELATION_KINDS.items()
         )
+        # 两行封顶：图例只是"怎么看这张图"的辅助说明，占三行就把图往下挤，
+        # 而图才是这一页的主角。
         return (
-            f"<small>圆圈大小 = 题量；颜色 = 你的正确率：{circles}<br>"
-            f"连线 = 知识点关系：{lines}<br>"
-            "点圆圈看这个知识点的情况；<b>点连线可以删掉它</b>（会先问一遍）</small>"
+            f'<span style="font-size:9.5pt; color:{theme.muted};">'
+            f"圆圈大小 = 题量　颜色 = 正确率：{circles}<br>"
+            f"连线：{lines}　·　点圆圈看详情，<b>点连线可删</b>（会先问）</span>"
         )
 
     # ---------- 刷新 ----------
@@ -418,7 +435,14 @@ class KnowledgeGraphPanel(QWidget):
             parts.append(
                 f"题库里还有 {data.loose_questions} 道题没挂到知识点上，画不进这张图"
             )
-        return "　·　".join(parts)
+        # 一整句塞在顶上一行会挤成一条灰带，拆成多行读起来才顺。
+        # **不要在这些句子中间插标签**：测试按片段匹配文案（如「3 个知识点」），
+        # 标签会把片段切开。整段一个 span，只包在外面。
+        return (
+            f'<span style="color:{self._theme.muted}; font-size:9.5pt;">'
+            + "<br>".join(parts)
+            + "</span>"
+        )
 
     # ---------- 画 ----------
 
@@ -515,6 +539,8 @@ class KnowledgeGraphPanel(QWidget):
                 placed,
                 z=3,
                 upward_only=True,
+                tooltip=chapter,
+                backdrop=True,
             )
 
         label_font = QFont(QApplication.font())
@@ -534,6 +560,7 @@ class KnowledgeGraphPanel(QWidget):
                 node.radius(peak) * SCENE_SIZE,
                 placed,
                 z=2,
+                tooltip=node.name,
             )
 
     def _place_text(
@@ -546,15 +573,23 @@ class KnowledgeGraphPanel(QWidget):
         placed: list[QRectF],
         z: float,
         upward_only: bool = False,
+        tooltip: str = "",
+        backdrop: bool = False,
     ) -> None:
         """放一段文字，**并且真的加进场景**。
 
         （旧的写法就是漏了最后这一步，名字算了一堆位置却没画出来——
         测试全绿、界面上一个字都没有。所以这里写完位置立刻 addItem。）
+
+        `tooltip` 存完整名字：图上只画得下 7 个字，剩下的靠悬停看。
+        `backdrop=True` 给章名垫一块同色底板——**章名一定会压到别的东西上**
+        （同章的点挨得紧），没有底板就糊成一团，分不出哪行字是章名。
         """
         item = QGraphicsSimpleTextItem(text)
         item.setFont(font)
         item.setBrush(QBrush(QColor(color)))
+        if tooltip:
+            item.setToolTip(tooltip)
         rect = self._best_label_rect(
             point,
             radius,
@@ -564,6 +599,17 @@ class KnowledgeGraphPanel(QWidget):
             upward_only=upward_only,
         )
         placed.append(rect)
+        if backdrop:
+            plate = QGraphicsRectItem(rect.adjusted(-6, -3, 6, 3))
+            # 用**画布底色**而不是面板色：面板色比画布亮一截，垫上去像贴了张白纸；
+            # 底色 + 一点透明度 = "这块地方腾开"，不抢眼睛。
+            plate_color = QColor(self._theme.bg)
+            plate_color.setAlpha(215)
+            plate.setBrush(QBrush(plate_color))
+            plate.setPen(QPen(Qt.PenStyle.NoPen))
+            plate.setZValue(z - 0.5)
+            plate.setToolTip(tooltip)
+            self.scene.addItem(plate)
         item.setPos(rect.left(), rect.top())
         item.setZValue(z)
         self.scene.addItem(item)

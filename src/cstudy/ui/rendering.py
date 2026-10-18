@@ -48,6 +48,84 @@ def configure(mono_family: str = "", mono_size: int | None = None) -> None:
             pass
 
 
+# 长文阅读的排版：**只管字号、间距、行高，不管颜色**。
+# 颜色一律留给主题（QSS 的 `color` 会继承进文档），写死一个深色在亮色主题里就瞎了。
+HEADING_PT = {1: 15.0, 2: 12.5, 3: 11.0, 4: 10.5}
+BODY_LINE_HEIGHT = 160          # 百分比
+BODY_BOTTOM_MARGIN = 6          # 段落之间留一点气口
+
+
+def _restyle(document) -> None:
+    """把 Markdown 渲染出来的文档重新排一遍版。
+
+    **为什么不用 `setDefaultStyleSheet` 了**：`QTextDocument.setMarkdown()`
+    走的是 Qt 自己的 markdown 导入器，它**直接构造成 block/char format**，
+    不生成 HTML —— 所以 `h1 { font-size: ... }` 那种 CSS 对它完全无效。
+    第一版就是这么白忙的（标题还是那么大）。这里改成逐个区块改格式。
+
+    改两件事：
+    1. 行距 160%、段间距 6px —— 默认 100% 行距读长文很挤；
+    2. 标题字号按级别压下来 —— Qt 默认 h1 是正文的 2 倍（正文 10.5pt 时就是 21pt），
+       一个标题占半屏，视觉层级反而糊。
+    """
+    from PyQt6.QtGui import QFont, QTextBlockFormat, QTextCursor
+
+    block = document.begin()
+    while block.isValid():
+        block_format = block.blockFormat()
+
+        line = block_format.lineHeight()
+        # 已经有自定义行距的块（比如代码块）不覆盖
+        if not line or block_format.lineHeightType() == 0:
+            block_format.setLineHeight(
+                BODY_LINE_HEIGHT,
+                QTextBlockFormat.LineHeightTypes.ProportionalHeight.value,
+            )
+            block_format.setBottomMargin(BODY_BOTTOM_MARGIN)
+            cursor = QTextCursor(block)
+            cursor.setBlockFormat(block_format)
+
+        size = HEADING_PT.get(block_format.headingLevel())
+        if size:
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid():
+                    char_format = fragment.charFormat()
+                    char_format.setFontPointSize(size)
+                    char_format.setFontWeight(QFont.Weight.DemiBold.value)
+                    span = QTextCursor(block)
+                    span.setPosition(fragment.position())
+                    span.setPosition(
+                        fragment.position() + fragment.length(),
+                        QTextCursor.MoveMode.KeepAnchor,
+                    )
+                    span.mergeCharFormat(char_format)
+                iterator += 1
+
+        block = block.next()
+
+
+def render_markdown(view, text: str) -> None:
+    """Markdown 正文 → 排好版的文档。显示笔记、题干都走这一个入口。"""
+    view.setMarkdown(text or "")
+    document = view.document()
+    if document is not None:
+        _restyle(document)
+
+
+def render_html(view, html: str) -> None:
+    """现成的 HTML → 排好版的文档（判分卡片、运行输出走这个）。
+
+    和 `render_markdown` 一样要重排一遍，否则判分卡片里的行距跟笔记页对不上，
+    同一块屏幕上两种密度，眼睛会累。
+    """
+    view.setHtml(html or "")
+    document = view.document()
+    if document is not None:
+        _restyle(document)
+
+
 def material_html(text: str) -> str:
     """题目原文 → HTML 片段。空内容返回空字符串。
 
@@ -62,3 +140,15 @@ def material_html(text: str) -> str:
         f"{escape(text.strip())}"
         "</pre>"
     )
+
+
+def style_document(view, margin: int = 20) -> None:
+    """给长文视图留够边距。
+
+    **文档内部的排版（字号、行距、标题层级）不在这儿**——那些得在
+    Markdown 渲染完之后由 `_restyle()` 逐个区块改（原因见 `_restyle` 的注释）。
+    这里只设"文字离边框多远"，设一次就够。
+    """
+    document = view.document()
+    if document is not None:
+        document.setDocumentMargin(margin)

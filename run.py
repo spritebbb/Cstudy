@@ -73,7 +73,7 @@ def main() -> int:
 
     from cstudy.ui import rendering
     from cstudy.ui.main_window import MainWindow
-    from cstudy.ui.theme import load_appearance
+    from cstudy.ui.theme import apply_palette, load_appearance
 
     app = QApplication(sys.argv)
     app.setApplicationName(str(config.get("app.name", "C语言备考助手")))
@@ -82,6 +82,9 @@ def main() -> int:
     # 主题在 app 级设一次就全局生效（QSS），不用挨个控件设颜色
     appearance = load_appearance(config)
     app.setStyleSheet(appearance.theme.stylesheet())
+    # QSS 管不到的地方交给调色板：输入框里那行灰色提示字、超链接颜色、
+    # 下拉列表高亮——不设的话它们仍是系统默认（深色主题下提示字几乎看不见）
+    apply_palette(app, appearance.theme)
 
     window = MainWindow(config, db, appearance)
     window.show()

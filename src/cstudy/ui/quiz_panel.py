@@ -12,9 +12,10 @@ import time
 from dataclasses import dataclass
 from html import escape
 from itertools import zip_longest
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -32,8 +33,8 @@ from ..grading import describe_expected, grade_choice, normalize_choice_answer
 from ..logging_setup import get_logger
 from ..models import Question
 from ..runner import RunResult, run_c_code
-from .rendering import material_html
-from .theme import DARK, Theme
+from .rendering import material_html, render_html, render_markdown
+from .theme import DARK, Theme, set_variant
 
 log = get_logger(__name__)
 
@@ -75,6 +76,48 @@ class QuizItem:
     started_at: float = 0.0
 
 
+class ChoiceRow(QFrame):
+    """一道选择题的一个选项。
+
+    **为什么不直接用 QRadioButton 显示选项文字**：QRadioButton 的标签
+    **不会换行**。题库里的选项经常是"以下关于一维数组的说法中，正确的是……"
+    这种长句，一长就被右边缘截掉——用户看不全四个选项，等于没法判断。
+    所以拆成"圆圈+字母"和"可换行的正文"两块，点哪边都算选中。
+    """
+
+    def __init__(self, letter: str, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("choiceRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 12, 8)
+        layout.setSpacing(10)
+
+        self.button = QRadioButton(letter, self)
+        self.button.setObjectName("choiceLetter")
+        # 点圆圈交给整行处理，免得"点字母"和"点文字"两套逻辑
+        self.button.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.button.toggled.connect(self._sync_state)
+
+        self.text_label = QLabel(text, self)
+        self.text_label.setObjectName("choiceText")
+        self.text_label.setWordWrap(True)
+
+        layout.addWidget(self.button, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self.text_label, 1)
+
+    def mousePressEvent(self, event) -> None:
+        self.button.setChecked(True)
+        super().mousePressEvent(event)
+
+    def _sync_state(self, checked: bool) -> None:
+        self.setProperty("checked", "true" if checked else "")
+        # QSS 的属性选择器只在重新 polish 时求值 —— 不刷这一下，底色不会变
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
 class QuizPanel(QWidget):
     """答题面板。外部只需要调 load() 和接 status_changed 信号。"""
 
@@ -98,11 +141,13 @@ class QuizPanel(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         top = QHBoxLayout()
-        self.progress_label = QLabel("")
+        top.setSpacing(8)
         self.score_label = QLabel("")
-        top.addWidget(self.progress_label)
+        self.score_label.setObjectName("pageHint")
         top.addWidget(self.score_label)
         top.addStretch(1)
         self.load_all_button = QPushButton("从题库挑题")
@@ -111,6 +156,11 @@ class QuizPanel(QWidget):
         self.restart_button.clicked.connect(self._restart)
         self.retry_wrong_button = QPushButton("只做刚才做错的")
         self.retry_wrong_button.clicked.connect(self._retry_wrong)
+        # 「从题库挑题」是这一页的入口动作，给它主按钮的分量；
+        # 另外两个是"重来"，点缀即可，不该跟入口抢眼。
+        set_variant(self.load_all_button, "primary")
+        set_variant(self.restart_button, "ghost")
+        set_variant(self.retry_wrong_button, "ghost")
         for button in (self.load_all_button, self.restart_button, self.retry_wrong_button):
             top.addWidget(button)
         root.addLayout(top)
@@ -118,12 +168,16 @@ class QuizPanel(QWidget):
         # 题目区放在滚动区域里：编程题的题干加参考答案可能很长
         self.body = QWidget()
         body_layout = QVBoxLayout(self.body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
 
         self.meta_label = QLabel("")
+        self.meta_label.setObjectName("pageHint")
         self.meta_label.setWordWrap(True)
         body_layout.addWidget(self.meta_label)
 
         self.question_view = QTextBrowser()
+        self.question_view.setObjectName("questionCard")
         self.question_view.setOpenExternalLinks(False)
         self.question_view.setMinimumHeight(80)
         body_layout.addWidget(self.question_view)
@@ -132,6 +186,7 @@ class QuizPanel(QWidget):
         self.choice_box = QWidget()
         self.choice_layout = QVBoxLayout(self.choice_box)
         self.choice_layout.setContentsMargins(0, 0, 0, 0)
+        self.choice_layout.setSpacing(6)
         self.choice_group = QButtonGroup(self)
         body_layout.addWidget(self.choice_box)
 
@@ -141,12 +196,15 @@ class QuizPanel(QWidget):
         body_layout.addWidget(self.answer_edit)
 
         self.submit_button = QPushButton("提交")
+        self.submit_button.setMinimumHeight(38)
+        set_variant(self.submit_button, "primary")
         self.submit_button.clicked.connect(self._submit)
         body_layout.addWidget(self.submit_button)
 
         body_layout.addWidget(self._build_run_box())
 
         self.feedback_view = QTextBrowser()
+        self.feedback_view.setObjectName("feedbackCard")
         self.feedback_view.setOpenExternalLinks(False)
         self.feedback_view.hide()
         body_layout.addWidget(self.feedback_view)
@@ -155,11 +213,16 @@ class QuizPanel(QWidget):
         self.self_grade_row = QWidget()
         row = QHBoxLayout(self.self_grade_row)
         row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(QLabel("自己对照一下："))
+        row.setSpacing(8)
+        hint = QLabel("自己对照一下：")
+        hint.setObjectName("pageHint")
+        row.addWidget(hint)
         self.right_button = QPushButton("答对了")
         self.right_button.clicked.connect(lambda: self._self_grade(True))
         self.wrong_button = QPushButton("答错了")
         self.wrong_button.clicked.connect(lambda: self._self_grade(False))
+        set_variant(self.right_button, "primary")
+        set_variant(self.wrong_button, "danger")
         row.addWidget(self.right_button)
         row.addWidget(self.wrong_button)
         row.addStretch(1)
@@ -174,11 +237,15 @@ class QuizPanel(QWidget):
         root.addWidget(scroll, 1)
 
         bottom = QHBoxLayout()
+        bottom.setSpacing(8)
         self.prev_button = QPushButton("上一题")
         self.prev_button.clicked.connect(lambda: self._go(-1))
         self.next_button = QPushButton("下一题")
         self.next_button.clicked.connect(lambda: self._go(1))
+        set_variant(self.prev_button, "ghost")
+        set_variant(self.next_button, "ghost")
         self.finish_button = QPushButton("看成绩")
+        set_variant(self.finish_button, "primary")
         self.finish_button.clicked.connect(self._show_score)
         bottom.addWidget(self.prev_button)
         bottom.addWidget(self.next_button)
@@ -198,18 +265,23 @@ class QuizPanel(QWidget):
         self.run_box = QWidget()
         layout = QVBoxLayout(self.run_box)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         hint = QLabel("写完可以先跑一下，编译错误会告诉你在第几行、错在哪。")
+        hint.setObjectName("pageHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        layout.addWidget(QLabel("程序需要的输入（程序里 scanf 读的那些，没有就留空）："))
+        stdin_label = QLabel("程序需要的输入（程序里 scanf 读的那些，没有就留空）：")
+        stdin_label.setObjectName("pageHint")
+        layout.addWidget(stdin_label)
         self.stdin_edit = QPlainTextEdit()
         self.stdin_edit.setPlaceholderText('每行一个。比如程序要 scanf("%d",&n); 这里就填 5')
         self.stdin_edit.setMaximumHeight(56)
         layout.addWidget(self.stdin_edit)
 
         self.run_button = QPushButton("跑一下（编译并运行）")
+        set_variant(self.run_button, "primary")
         self.run_button.clicked.connect(self._run_code)
         layout.addWidget(self.run_button)
 
@@ -230,7 +302,7 @@ class QuizPanel(QWidget):
 
         self.run_button.setEnabled(False)
         self.run_button.setText("正在编译运行…")
-        self.run_output.setHtml(material_html("正在编译…"))
+        render_html(self.run_output, material_html("正在编译…"))
         self.run_output.show()
 
         self._run_worker = RunCodeWorker(source, self.stdin_edit.toPlainText())
@@ -240,7 +312,7 @@ class QuizPanel(QWidget):
     def _on_run_done(self, result: RunResult) -> None:
         self.run_button.setEnabled(True)
         self.run_button.setText("跑一下（编译并运行）")
-        self.run_output.setHtml(material_html(result.output))
+        render_html(self.run_output, material_html(result.output))
         self.run_output.show()
 
     # ---------- 装载题目 ----------
@@ -271,7 +343,8 @@ class QuizPanel(QWidget):
     def _show_empty(self, message: str) -> None:
         self._items = []
         self.meta_label.setText("")
-        self.question_view.setMarkdown(message)
+        render_markdown(self.question_view, message)
+        QTimer.singleShot(0, self._fit_question_height)
         self._set_input_visible(choice=False, text=False)
         self._hide_feedback()
         self.submit_button.setEnabled(False)
@@ -280,7 +353,6 @@ class QuizPanel(QWidget):
         self.finish_button.setEnabled(False)
         self.restart_button.setEnabled(False)
         self.retry_wrong_button.setEnabled(False)
-        self.progress_label.setText("")
         self.score_label.setText("")
 
     # ---------- 显示当前题 ----------
@@ -302,7 +374,7 @@ class QuizPanel(QWidget):
             f"{question.exam_type_label}　·　难度 {question.difficulty}"
             + (f"　·　知识点：{question.point}" if question.point else "")
         )
-        self.question_view.setHtml(material_html(question.question))
+        render_html(self.question_view, material_html(question.question))
 
         self._fill_inputs(question, item)
         self._hide_feedback()
@@ -310,6 +382,33 @@ class QuizPanel(QWidget):
         self._update_nav()
         self._update_score_label()
         item.started_at = time.monotonic()
+        QTimer.singleShot(0, self._fit_question_height)
+
+    def _fit_question_height(self) -> None:
+        """题干和判分卡片按内容高度收放。
+
+        QTextBrowser 默认跟着滚动区一路撑满，于是三行字的题干也能占半屏，
+        下半页全是空白——上一版就是这样，看着像没渲染完。
+        这里按文档的实际高度定死，太长的封顶（剩下的滚动看），太短的留点气口。
+        """
+        self._fit_view(self.question_view, 96, 340)
+        self._fit_view(self.feedback_view, 120, 420)
+
+    def _fit_view(self, view: QTextBrowser, min_height: int, max_height: int) -> None:
+        if not view.isVisible():
+            return   # 藏着的控件量不出真实宽度，量了也是错的
+        document = view.document()
+        width = view.viewport().width()
+        if document is None or width <= 0:
+            return
+        document.setTextWidth(width)
+        height = int(document.size().height()) + 38   # 上下内边距 + 边框
+        view.setFixedHeight(max(min_height, min(height, max_height)))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # 窗口一变宽，同样的字占的行数就变了，得重新量一遍
+        QTimer.singleShot(0, self._fit_question_height)
 
     def _fill_inputs(self, question: Question, item: QuizItem) -> None:
         """按题型摆好作答控件，并把之前答过的内容填回去。"""
@@ -330,19 +429,21 @@ class QuizPanel(QWidget):
         self.run_output.hide()
 
     def _rebuild_choices(self, question: Question) -> None:
-        """每题重建单选按钮——选项是随题目变的，不能复用。"""
+        """每题重建选项行——选项是随题目变的，不能复用。"""
         for button in self.choice_group.buttons():
             self.choice_group.removeButton(button)
         while self.choice_layout.count():
-            widget = self.choice_layout.takeAt(0).widget()
+            item = self.choice_layout.takeAt(0)
+            widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
 
-        for option in question.options:
-            button = QRadioButton(option, self.choice_box)
-            self.choice_group.addButton(button)
-            self.choice_layout.addWidget(button)
+        for index, option in enumerate(question.options):
+            letter = chr(ord("A") + index)
+            row = ChoiceRow(letter, option, self.choice_box)
+            self.choice_group.addButton(row.button)
+            self.choice_layout.addWidget(row)
 
     def _set_input_visible(self, choice: bool, text: bool) -> None:
         self.choice_box.setVisible(choice)
@@ -354,7 +455,7 @@ class QuizPanel(QWidget):
 
     def _hide_feedback(self) -> None:
         self.feedback_view.hide()
-        self.feedback_view.setMarkdown("")
+        self.feedback_view.clear()
         self.self_grade_row.hide()
 
     # ---------- 提交与判分 ----------
@@ -427,27 +528,38 @@ class QuizPanel(QWidget):
         """展示参考答案和解析。auto 为 None 时让用户自己判对错。"""
         question = item.question
         expected = self._reference_text(question)
+        theme = self._theme
 
         parts: list[str] = []
+        # 判分结论要一眼看到：放大 + 上色，比原来那个跟正文一样大的 <h3> 醒目
         if auto is True:
             parts.append(
-                f"<h3 style='color:{self._theme.ok}; margin:4px 0;'>✅ 答对了</h3>"
+                f'<p style="font-size:13pt; font-weight:600; color:{theme.ok};'
+                ' margin:2px 0 8px 0;">✔ 答对了</p>'
             )
         elif auto is False:
             parts.append(
-                f"<h3 style='color:{self._theme.danger}; margin:4px 0;'>❌ 答错了</h3>"
+                f'<p style="font-size:13pt; font-weight:600; color:{theme.danger};'
+                ' margin:2px 0 8px 0;">✘ 答错了</p>'
             )
         if extra:
-            parts.append(f"<p>{escape(extra)}</p>")
+            parts.append(f'<p style="color:{theme.muted}; margin:0 0 8px 0;">{escape(extra)}</p>')
 
-        parts.append("<p style='margin:8px 0 2px 0;'><b>参考答案</b></p>")
+        # 小标题用次要色、比正文小一号——区分层次靠的是字重和颜色，不是再加个粗体标签
+        parts.append(
+            f'<p style="color:{theme.muted}; font-size:9.5pt; margin:10px 0 2px 0;">参考答案</p>'
+        )
         parts.append(material_html(expected))
         if question.explanation:
-            parts.append("<p style='margin:8px 0 2px 0;'><b>解析</b></p>")
+            parts.append(
+                f'<p style="color:{theme.muted}; font-size:9.5pt; margin:14px 0 2px 0;">解析</p>'
+            )
             parts.append(material_html(question.explanation))
 
-        self.feedback_view.setHtml("".join(parts))
+        render_html(self.feedback_view, "".join(parts))
         self.feedback_view.show()
+        # 刚 show 出来的控件宽度还是旧值，等这一轮布局跑完再量
+        QTimer.singleShot(0, self._fit_question_height)
 
         if auto is None:
             self.self_grade_row.show()
@@ -522,11 +634,12 @@ class QuizPanel(QWidget):
             lines.append("")
             lines.append("全对，厉害。")
 
-        self.question_view.setMarkdown("\n".join(lines))
+        render_markdown(self.question_view, "\n".join(lines))
         self.meta_label.setText("成绩")
         self._set_input_visible(choice=False, text=False)
         self._hide_feedback()
         self.submit_button.setEnabled(False)
+        QTimer.singleShot(0, self._fit_question_height)
         self.status_changed.emit(f"本批 {total} 题，答对 {right}，答错 {wrong}")
 
     def _restart(self) -> None:

@@ -46,8 +46,15 @@ class Config:
 
         paths 里有的配的是目录（notes、logs、audio），有的是文件名
         （database、cookies）。带后缀的按文件处理，建它的父目录。
+
+        `temp_bank`（「考前突击」那一栏自己的库）是**可选**的：
+        老配置文件里没有这一项、或者只带 `{"paths": {}}` 的最小配置，
+        都不该让软件起不来——所以它缺了只是跳过，别的键缺了照旧报错
+        （那些是硬依赖，缺了会在别处出更难看的问题）。
         """
-        for key in ("notes", "logs", "cookies", "audio", "database"):
+        for key in ("notes", "logs", "cookies", "audio", "database", "temp_bank"):
+            if not self.get(f"paths.{key}"):
+                continue
             target = self.path(key)
             directory = target.parent if target.suffix else target
             directory.mkdir(parents=True, exist_ok=True)

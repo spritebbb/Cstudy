@@ -9,13 +9,15 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# ===== 运行时数据（含个人登录态和答题记录，不进仓库）=====
-data/cstudy.db
-data/backups/
-data/cookies/
-data/audio/
-data/frames/
-data/ocr_cache/
+# ===== 打包产物（PyInstaller 生成，几百 MB，不进仓库）=====
+dist/
+build/
+*.spec
+
+# ===== 运行时数据（整个目录一律不进仓库）=====
+# 含：答题库、B 站登录 cookie、题库导入缓存、学习笔记导出、备份
+# 程序启动时会自动 mkdir，所以仓库里不需要保留这个目录
+data/
 logs/
 
 # ===== 生成的学习笔记（每次导入都会新增，是产物不是源码）=====
@@ -24,6 +26,7 @@ notes/
 # ===== 临时文件 =====
 *.tmp
 *.part
+data/tmp/
 
 # ===== 操作系统 =====
 Thumbs.db
@@ -39,3 +42,7 @@ desktop.ini
 
 # ===== 备份文件 =====
 *.bak
+
+# ===== 与本项目无关的个人资料 =====
+docs/eNSP*
+docs/实操对照手册-*

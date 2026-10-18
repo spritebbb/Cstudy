@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from ..db import Database, parse_db_time
 from ..logging_setup import get_logger
+from .rendering import render_markdown, style_document
 
 log = get_logger(__name__)
 
@@ -33,6 +34,8 @@ class NotesPanel(QWidget):
         self._db = db
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("搜笔记：标题和正文都搜，比如「位运算」")
@@ -40,6 +43,7 @@ class NotesPanel(QWidget):
         layout.addWidget(self.search_edit)
 
         self.count_label = QLabel("")
+        self.count_label.setObjectName("pageHint")
         layout.addWidget(self.count_label)
 
         self.note_list = QListWidget()
@@ -49,6 +53,9 @@ class NotesPanel(QWidget):
 
         self.content_view = QTextBrowser()
         self.content_view.setOpenExternalLinks(True)
+        # 笔记是要拿来读长文的：留白给足、行距放松、标题分层次。
+        # 这几项 QSS 管不到（文档内部的排版是 QTextDocument 的事）。
+        style_document(self.content_view, margin=24)
         layout.addWidget(self.content_view, 1)
 
         self.refresh()
@@ -103,7 +110,7 @@ class NotesPanel(QWidget):
         if row is None:
             self.content_view.setHtml("<p>这篇笔记找不到了。</p>")
             return
-        self.content_view.setMarkdown(str(row["content"] or ""))
+        render_markdown(self.content_view, str(row["content"] or ""))
 
     # ---------- 刚生成的笔记 ----------
 
@@ -111,4 +118,4 @@ class NotesPanel(QWidget):
         """直接显示一篇笔记（刚生成完那条路走这儿）。"""
         self.refresh()
         if markdown:
-            self.content_view.setMarkdown(markdown)
+            render_markdown(self.content_view, markdown)
